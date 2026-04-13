@@ -39,7 +39,10 @@ impl StorageConfiguration {
             } else if !user_info.is_empty() {
                 (user_info.to_string(), None)
             } else {
-                (whoami::username(), None)
+                (
+                    whoami::username().wrap_err("failed to determine current username")?,
+                    None,
+                )
             };
 
             let (host_info, location) = suffix
@@ -137,4 +140,57 @@ impl JijiRepository {
         let path = self.workspace_root().join("config.toml");
         self.configuration.save(path)
     }
+}
+
+#[cfg(test)]
+#[test]
+fn configuration_roundtrips_file_and_sftp_storage() -> Result<()> {
+    let temp_dir = tempfile::tempdir()?;
+    let path = Utf8PathBuf::try_from(temp_dir.path().join("config.toml")).unwrap();
+
+    let mut config = Configuration {
+        default_storage: Some("local".to_string()),
+        storages: HashMap::new(),
+    };
+    config.storages.insert(
+        "local".to_string(),
+        StorageConfiguration::Path {
+            location: "/tmp/jiji-backup".into(),
+        },
+    );
+    config.storages.insert(
+        "remote".to_string(),
+        StorageConfiguration::Sftp(SftpConfiguration {
+            username: "alice".to_string(),
+            password: Some("secret".to_string()),
+            host: "example.com".to_string(),
+            port: Some(2222),
+            location: "/srv/jiji".to_string(),
+        }),
+    );
+
+    config.save(&path)?;
+    let loaded = Configuration::load(&path)?;
+
+    assert_eq!(loaded.default_storage.as_deref(), Some("local"));
+
+    match loaded.storages.get("local") {
+        Some(StorageConfiguration::Path { location }) => {
+            assert_eq!(location, &Utf8PathBuf::from("/tmp/jiji-backup"));
+        }
+        other => panic!("expected local path storage, got {other:?}"),
+    }
+
+    match loaded.storages.get("remote") {
+        Some(StorageConfiguration::Sftp(sftp)) => {
+            assert_eq!(sftp.username, "alice");
+            assert_eq!(sftp.password.as_deref(), Some("secret"));
+            assert_eq!(sftp.host, "example.com");
+            assert_eq!(sftp.port, Some(2222));
+            assert_eq!(sftp.location, "/srv/jiji");
+        }
+        other => panic!("expected remote sftp storage, got {other:?}"),
+    }
+
+    Ok(())
 }

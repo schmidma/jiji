@@ -7,7 +7,7 @@ use color_eyre::{
 };
 use tracing::debug;
 
-use crate::{hashing::Hash, storage::Storage, with_added_extension::WithAddedExtension as _};
+use crate::{hashing::Hash, storage::Storage};
 
 /// A simple filesystem-backed storage backend
 #[derive(Debug, Clone)]

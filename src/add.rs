@@ -9,7 +9,6 @@ use color_eyre::{
 use crate::{
     hashing::hash_file,
     index::{Index, Node},
-    with_added_extension::WithAddedExtension as _,
     JijiRepository,
 };
 
@@ -114,7 +113,10 @@ impl JijiRepository {
 mod tests {
     use std::fs;
 
-    use crate::{reference_file::ReferenceFile, test_utils::setup_repo};
+    use crate::{
+        reference_file::ReferenceFile, test_utils::setup_repo,
+        with_added_extension::WithAddedExtension as _,
+    };
 
     use super::*;
 

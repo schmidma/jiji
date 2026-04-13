@@ -4,21 +4,21 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-blake3 = { version = "1.6.0", features = ["serde"] }
-camino = { version = "1.2.0", features = ["serde1"] }
-clap = { version = "4.5.30", features = ["derive"] }
-color-eyre = "0.6.3"
-indicatif = "0.18.0"
+blake3 = { version = "1.8.4", features = ["serde"] }
+camino = { version = "1.2.2", features = ["serde1"] }
+clap = { version = "4.6.0", features = ["derive"] }
+color-eyre = "0.6.5"
+indicatif = "0.18.4"
 itertools = "0.14.0"
 pathdiff = { version = "0.2.3", features = ["camino"] }
-serde = { version = "1.0.217", features = ["derive"] }
-sha2 = "0.10.8"
+serde = { version = "1.0.228", features = ["derive"] }
+sha2 = "0.11.0"
 ssh2 = "0.9.5"
-toml = "0.9.7"
-tracing = "0.1.41"
-tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
+toml = "1.1.2"
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 walkdir = "2.5.0"
-whoami = "1.6.1"
+whoami = "2.1.1"
 
 [dev-dependencies]
-tempfile = "3.23.0"
+tempfile = "3.27.0"
