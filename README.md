@@ -1,7 +1,7 @@
 # Jiji
 
-Jiji is a lightweight, Git-inspired file storage system designed for managing large machine learning datasets, models, and other assets.
-Jiji helps developers track changes, store files efficiently, and push or fetch assets to remote storage backends.
+Jiji is a lightweight tool for tracking and storing large files inside a Git repository.
+It keeps file contents in a content-addressed cache, records tracked state in `*.jiji` reference files, and can push or fetch cached objects through configured storage backends.
 
 > [!WARNING]
 > This project is currently in **alpha**. It is **far from finished**, and APIs, features, and behavior may change at any time. Use at your own risk — things may break, and documentation may be incomplete.
@@ -54,17 +54,19 @@ jiji status
 #     untracked: data/datasets/new_dataset.csv
 ```
 
-Push assets to remote storage:
+Push assets to the configured default storage:
 
 ```bash
-jiji push sftp_storage
+jiji push
 ```
 
-Fetch assets from remote storage:
+Fetch assets from the configured default storage:
 
 ```bash
-jiji fetch sftp_storage
+jiji fetch
 ```
+
+For focused documentation on Jiji's current behavior and internal model, start with [`docs/index.md`](docs/index.md).
 
 ## License
 
@@ -72,4 +74,6 @@ This project is licensed under the [Apache License 2.0](LICENSE).
 
 ## Contributions
 
-Contributions are welcome! If you encounter issues, or have ideas for new storage backends, improved indexing, or performance enhancements, please open a pull request or issue.
+Contributions are welcome. If you encounter issues, or have ideas for new storage backends, improved indexing, or performance enhancements, please open a pull request or issue.
+
+Before doing development work, read [`docs/workflow.md`](docs/workflow.md) for the repository workflow. Jiji keeps `main` linear and expects unpublished branches to be rewritten into one or a very small stack of semantic atomic commits before integration.
