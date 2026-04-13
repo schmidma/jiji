@@ -27,8 +27,13 @@ impl JijiRepository {
         }
 
         let path = path.as_ref();
+        let path = if path.is_absolute() {
+            path.to_owned()
+        } else {
+            self.root.join(path)
+        };
         debug!(%path, %hash, %cache_path, "caching file ...");
-        fs::copy(path, &cache_path)
+        fs::copy(&path, &cache_path)
             .with_context(|| format!("failed to copy {path} to {cache_path}"))?;
 
         Ok(())
@@ -70,6 +75,34 @@ impl JijiRepository {
             .wrap_err_with(|| format!("failed to create file: {cache_path}"))?;
         file.write_all(data)
             .wrap_err("failed to write reference to file")?;
+
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+
+    use color_eyre::Result;
+
+    use crate::{hashing::hash_file, test_utils::setup_repo};
+
+    #[test]
+    fn cache_file_uses_repository_root_from_nested_cwd() -> Result<()> {
+        let (repo, _tmp, mut guard) = setup_repo()?;
+
+        let nested_dir = repo.root.join("nested/deeper");
+        fs::create_dir_all(nested_dir.as_std_path())?;
+        fs::write(repo.root.join("file.txt"), "hello world")?;
+        let hash = hash_file(repo.root.join("file.txt"))?;
+
+        guard.change_to(&nested_dir)?;
+        repo.cache_file(hash, "file.txt")?;
+
+        let cache_path = repo.cache_path_for(hash);
+        assert!(cache_path.exists(), "cache entry should be created");
+        assert_eq!(fs::read_to_string(cache_path)?, "hello world");
 
         Ok(())
     }

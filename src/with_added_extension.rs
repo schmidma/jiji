@@ -14,7 +14,8 @@ pub trait WithAddedExtension {
     /// # Examples
     ///
     /// ```
-    /// use camino::{Utf8Path, Utf8PathBuf};
+    /// use camino::Utf8Path;
+    /// use jiji::WithAddedExtension;
     ///
     /// let path = Utf8Path::new("file");
     /// let new_path = path.with_added_extension("txt");

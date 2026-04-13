@@ -28,14 +28,16 @@ impl JijiRepository {
         for path in paths {
             let path = path.as_ref();
             let relative_path = self.to_repo_relative_path(path)?;
+            let user_facing_path = self.to_user_facing_path(&relative_path)?;
             self.add_path(index, &relative_path)
-                .wrap_err_with(|| format!("failed to add {relative_path}"))?;
-            println!("adding {path}");
+                .wrap_err_with(|| format!("failed to add {user_facing_path}"))?;
+            println!("adding {user_facing_path}");
         }
         Ok(())
     }
 
     fn add_path(&self, index: &mut Index, path: &Utf8Path) -> Result<()> {
+        let repository_path = self.root.join(path);
         let node = match index.find_owner_mut(path) {
             Some(node) => node,
             None => {
@@ -49,9 +51,9 @@ impl JijiRepository {
             }
         };
 
-        let metadata = fs::metadata(path).wrap_err("failed to get metadata")?;
+        let metadata = fs::metadata(&repository_path).wrap_err("failed to get metadata")?;
         if metadata.is_file() {
-            let hash = hash_file(self.root.join(path))
+            let hash = hash_file(&repository_path)
                 .wrap_err_with(|| format!("failed to hash file {path}"))?;
             let relative_path = path
                 .strip_prefix(&node.base)
@@ -115,7 +117,7 @@ mod tests {
 
     #[test]
     fn add_single_file() -> Result<()> {
-        let (repo, _tmp) = setup_repo()?;
+        let (repo, _tmp, _guard) = setup_repo()?;
 
         let path = "file.txt";
         fs::write(path, "file content")?;
@@ -147,7 +149,7 @@ mod tests {
 
     #[test]
     fn add_single_file_absolute() -> Result<()> {
-        let (repo, tmp) = setup_repo()?;
+        let (repo, tmp, _guard) = setup_repo()?;
 
         let tmp_path = <&Utf8Path>::try_from(tmp.path())?;
         let path = tmp_path.join("file.txt");
@@ -178,7 +180,7 @@ mod tests {
 
     #[test]
     fn add_nested_file() -> Result<()> {
-        let (repo, _tmp) = setup_repo()?;
+        let (repo, _tmp, _guard) = setup_repo()?;
 
         let path = "dir/subdir/file.txt";
         fs::create_dir_all("dir/subdir")?;
@@ -208,8 +210,58 @@ mod tests {
     }
 
     #[test]
+    fn add_bare_and_nested_under_cwd_paths_from_nested_cwd() -> Result<()> {
+        let (repo, _tmp, mut guard) = setup_repo()?;
+
+        let nested_dir = repo.root.join("nested/deeper");
+        let nested_child_dir = nested_dir.join("child");
+        fs::create_dir_all(nested_child_dir.as_std_path())?;
+        fs::write(nested_dir.join("file.txt"), "file content")?;
+        fs::write(nested_child_dir.join("file.txt"), "child file content")?;
+
+        guard.change_to(&nested_dir)?;
+        repo.add([Utf8Path::new("file.txt"), Utf8Path::new("child/file.txt")])?;
+
+        let reference_file = ReferenceFile::read(repo.root.join("nested/deeper/file.txt.jiji"))?;
+        assert_eq!(reference_file.files.len(), 1);
+        assert_eq!(reference_file.files[0].path, "file.txt");
+
+        let child_reference_file =
+            ReferenceFile::read(repo.root.join("nested/deeper/child/file.txt.jiji"))?;
+        assert_eq!(child_reference_file.files.len(), 1);
+        assert_eq!(child_reference_file.files[0].path, "file.txt");
+
+        Ok(())
+    }
+
+    #[test]
+    fn add_repo_relative_looking_path_from_nested_cwd_errors_when_cwd_relative_target_is_missing(
+    ) -> Result<()> {
+        let (repo, _tmp, mut guard) = setup_repo()?;
+
+        let nested_dir = repo.root.join("nested/deeper");
+        fs::create_dir_all(nested_dir.as_std_path())?;
+        fs::write(nested_dir.join("file.txt"), "file content")?;
+
+        guard.change_to(&nested_dir)?;
+        let result = repo.add([Utf8Path::new("nested/deeper/file.txt")]);
+
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("failed to add nested/deeper/file.txt"));
+        assert!(!repo
+            .root
+            .join("nested/deeper/nested/deeper/file.txt.jiji")
+            .exists());
+
+        Ok(())
+    }
+
+    #[test]
     fn add_multiple_files() -> Result<()> {
-        let (repo, _tmp) = setup_repo()?;
+        let (repo, _tmp, _guard) = setup_repo()?;
 
         let paths = ["file1.txt", "file2.txt", "dir/file3.txt"];
         for path in &paths {
@@ -252,7 +304,7 @@ mod tests {
 
     #[test]
     fn add_directory() -> Result<()> {
-        let (repo, _tmp) = setup_repo()?;
+        let (repo, _tmp, _guard) = setup_repo()?;
 
         let dir_path = "mydir";
         let file_paths = ["mydir/file1.txt", "mydir/subdir/file2.txt"];
@@ -316,7 +368,7 @@ mod tests {
 
     #[test]
     fn add_empty_directory() -> Result<()> {
-        let (repo, _tmp) = setup_repo()?;
+        let (repo, _tmp, _guard) = setup_repo()?;
 
         let dir_path = "emptydir";
         fs::create_dir_all(dir_path)?;
@@ -334,7 +386,7 @@ mod tests {
 
     #[test]
     fn add_update_existing_file() -> Result<()> {
-        let (repo, _tmp) = setup_repo()?;
+        let (repo, _tmp, _guard) = setup_repo()?;
 
         let path = "file.txt";
         fs::write(path, "initial content")?;
@@ -372,7 +424,7 @@ mod tests {
 
     #[test]
     fn add_file_to_existing_directory() -> Result<()> {
-        let (repo, _tmp) = setup_repo()?;
+        let (repo, _tmp, _guard) = setup_repo()?;
 
         let dir_path = "mydir";
         let initial_file_path = "mydir/file1.txt";

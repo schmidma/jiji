@@ -36,10 +36,11 @@ impl Reference {
     ///
     /// ```
     /// use camino::Utf8Path;
+    /// use jiji::Reference;
     ///
     /// let base = Utf8Path::new("/home/user");
     /// let target = Utf8Path::new("/home/user/project/file.txt");
-    /// let hash = hash_str("file content");
+    /// let hash = blake3::hash(b"file content");
     /// let reference = Reference::from_path_with_base(target, base, hash).unwrap();
     /// assert!(reference.path == "project/file.txt");
     /// ```
@@ -105,6 +106,7 @@ impl ReferenceFile {
     ///
     /// ```no_run
     /// use camino::Utf8Path;
+    /// use jiji::ReferenceFile;
     ///
     /// let reference_file = ReferenceFile::read(Utf8Path::new("references.toml")).unwrap();
     /// ```

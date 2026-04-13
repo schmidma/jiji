@@ -466,7 +466,7 @@ mod test {
 
     #[test]
     fn index_empty_repository() -> Result<()> {
-        let (repo, _tmp) = setup_repo()?;
+        let (repo, _tmp, _guard) = setup_repo()?;
         let index = repo.index()?;
         assert!(index.nodes.is_empty(), "index should be empty");
         Ok(())
@@ -474,7 +474,7 @@ mod test {
 
     #[test]
     fn index_single_file() -> Result<()> {
-        let (repo, _tmp) = setup_repo()?;
+        let (repo, _tmp, _guard) = setup_repo()?;
 
         ReferenceFile::empty()
             .add_file(Reference::new("file.txt".into(), Hash::from_bytes([1; 32])))
@@ -522,7 +522,7 @@ mod test {
 
     #[test]
     fn index_nested_paths() -> Result<()> {
-        let (repo, _tmp) = setup_repo()?;
+        let (repo, _tmp, _guard) = setup_repo()?;
 
         let nested_path = repo.root.join("foo/bar/file.txt.jiji");
         create_dir_all(nested_path.parent().unwrap())?;
@@ -573,7 +573,7 @@ mod test {
 
     #[test]
     fn index_directory_not_in_cache() -> Result<()> {
-        let (repo, _tmp) = setup_repo()?;
+        let (repo, _tmp, _guard) = setup_repo()?;
 
         ReferenceFile::empty()
             .add_directory(Reference::new("data".into(), Hash::from_bytes([2; 32])))
@@ -608,7 +608,7 @@ mod test {
 
     #[test]
     fn index_directory_in_cache_resolved() -> Result<()> {
-        let (repo, _tmp) = setup_repo()?;
+        let (repo, _tmp, _guard) = setup_repo()?;
 
         let child_hash = Hash::from_bytes([10; 32]);
         let mut directory_manifest = ReferenceFile::empty();
@@ -661,7 +661,7 @@ mod test {
 
     #[test]
     fn index_multiple_nodes() -> Result<()> {
-        let (repo, _tmp) = setup_repo()?;
+        let (repo, _tmp, _guard) = setup_repo()?;
 
         ReferenceFile::empty()
             .add_file(Reference::new("f1.txt".into(), Hash::from_bytes([1; 32])))
@@ -691,7 +691,7 @@ mod test {
 
     #[test]
     fn index_ignores_non_jiji_files() -> Result<()> {
-        let (repo, _tmp) = setup_repo()?;
+        let (repo, _tmp, _guard) = setup_repo()?;
 
         fs::write(repo.root.join("not_a_ref.txt"), "hello")?;
         ReferenceFile::empty()
@@ -710,7 +710,7 @@ mod test {
 
     #[test]
     fn index_cached_manifest_with_nested_directories_errors() -> Result<()> {
-        let (repo, _tmp) = setup_repo()?;
+        let (repo, _tmp, _guard) = setup_repo()?;
 
         // Cached manifest with nested directories
         let mut bad_manifest = ReferenceFile::empty();
@@ -1056,7 +1056,7 @@ mod test {
 
     #[test]
     fn persist_clean_node() -> Result<()> {
-        let (repo, _tmp) = setup_repo()?;
+        let (repo, _tmp, _guard) = setup_repo()?;
 
         let hash = Hash::from_bytes([1u8; 32]);
 
@@ -1084,7 +1084,7 @@ mod test {
 
     #[test]
     fn persist_node_with_pending_file() -> Result<()> {
-        let (repo, _tmp) = setup_repo()?;
+        let (repo, _tmp, _guard) = setup_repo()?;
 
         fs::write("foo.txt", "hello world")?;
         let hash = hash_file("foo.txt")?;
@@ -1126,8 +1126,49 @@ mod test {
     }
 
     #[test]
+    fn persist_node_with_pending_file_from_nested_cwd() -> Result<()> {
+        let (repo, _tmp, mut guard) = setup_repo()?;
+
+        let nested_dir = repo.root.join("nested/deeper");
+        fs::create_dir_all(nested_dir.as_std_path())?;
+        fs::write(repo.root.join("foo.txt"), "hello world")?;
+        let hash = hash_file(repo.root.join("foo.txt"))?;
+
+        let mut node = Node {
+            path: "foo.txt.jiji".into(),
+            base: "".into(),
+            files: vec![File {
+                path: "foo.txt".into(),
+                hash,
+                status: FileStatus::Staged,
+            }],
+            directories: Vec::new(),
+        };
+
+        guard.change_to(&nested_dir)?;
+        node.persist_to_disk(&repo)?;
+
+        let reference_file = ReferenceFile::read(repo.root.join("foo.txt.jiji"))?;
+        assert_eq!(reference_file.files.len(), 1, "one file tracked");
+        assert_eq!(reference_file.files[0].path, "foo.txt", "correct file path");
+        assert_eq!(reference_file.files[0].hash, hash, "correct file hash");
+
+        let cache_path = repo.cache_path_for(hash);
+        assert!(cache_path.exists(), "file should be cached");
+        let content = fs::read_to_string(cache_path)?;
+        assert_eq!(content, "hello world", "cached file content should match");
+        assert_eq!(
+            node.files[0].status,
+            FileStatus::Unknown,
+            "file should be clean"
+        );
+
+        Ok(())
+    }
+
+    #[test]
     fn persist_node_with_pending_directory() -> Result<()> {
-        let (repo, _tmp) = setup_repo()?;
+        let (repo, _tmp, _guard) = setup_repo()?;
 
         fs::create_dir_all("dir")?;
         fs::write("dir/foo.txt", "foo content")?;
@@ -1187,6 +1228,65 @@ mod test {
         assert_eq!(
             content_foo, "foo content",
             "cached foo.txt content should match"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn persist_node_with_pending_directory_from_nested_cwd() -> Result<()> {
+        let (repo, _tmp, mut guard) = setup_repo()?;
+
+        let nested_dir = repo.root.join("nested/deeper");
+        fs::create_dir_all(nested_dir.as_std_path())?;
+        fs::create_dir_all(repo.root.join("dir").as_std_path())?;
+        fs::write(repo.root.join("dir/foo.txt"), "foo content")?;
+
+        let hash_foo = hash_file(repo.root.join("dir/foo.txt"))?;
+
+        let mut node = Node {
+            path: "dir.jiji".into(),
+            base: "".into(),
+            files: Vec::new(),
+            directories: vec![Directory {
+                path: "dir".into(),
+                hash: None,
+                children: DirectoryChildren::Resolved(vec![File {
+                    path: "foo.txt".into(),
+                    hash: hash_foo,
+                    status: FileStatus::Staged,
+                }]),
+            }],
+        };
+
+        guard.change_to(&nested_dir)?;
+        node.persist_to_disk(&repo)?;
+
+        let reference_file = ReferenceFile::read(repo.root.join("dir.jiji"))?;
+        assert_eq!(reference_file.files.len(), 0, "no files tracked");
+        assert_eq!(reference_file.directories.len(), 1, "one directory tracked");
+
+        let cache_path_dir = repo.cache_path_for(reference_file.directories[0].hash);
+        assert!(
+            cache_path_dir.exists(),
+            "directory reference should be cached"
+        );
+        let dir_reference = ReferenceFile::read(cache_path_dir)?;
+        assert_eq!(dir_reference.files.len(), 1, "one file in cached directory");
+        assert_eq!(dir_reference.files[0].path, "foo.txt");
+        assert_eq!(dir_reference.files[0].hash, hash_foo);
+
+        let cache_path_foo = repo.cache_path_for(hash_foo);
+        assert!(cache_path_foo.exists(), "foo.txt should be cached");
+        assert_eq!(fs::read_to_string(cache_path_foo)?, "foo content");
+        assert_eq!(
+            node.directories[0].children,
+            DirectoryChildren::Resolved(vec![File {
+                path: "foo.txt".into(),
+                hash: hash_foo,
+                status: FileStatus::Unknown,
+            }]),
+            "directory child should be marked clean"
         );
 
         Ok(())
