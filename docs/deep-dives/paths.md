@@ -3,7 +3,7 @@
 Jiji has a two-layer path model:
 
 1. User input paths: what a person types into `jiji add` or `jiji restore`.
-2. Repository-relative internal tracked paths: the normalized paths Jiji stores and uses internally.
+2. Repository-relative semantic paths: the normalized paths Jiji stores and looks up internally.
 
 Most path behavior gets simpler once you keep those two layers separate.
 
@@ -11,7 +11,7 @@ Most path behavior gets simpler once you keep those two layers separate.
 
 Jiji has to accept paths from different working directories, reject paths outside the repository, and still store one stable internal path for each tracked entry.
 
-That is why the CLI first resolves user input relative to the current shell location, then converts the result into a path relative to `repo.root`. After that point, `add`, `restore`, indexing, reference files, and cache lookups all work from repository-relative paths.
+That is why the CLI first resolves user input relative to the current shell location, then rewrites the result relative to `repo.root`. After that, `add`, `restore`, indexing, and lookups all work from the same repository-relative semantic path.
 
 ## User-Facing Rules
 
@@ -53,7 +53,7 @@ Jiji does not have a mode where tracked paths can point outside the repository t
 
 ## Internal Model
 
-Internally, Jiji uses repository-relative paths as the semantic paths for CLI normalization, selection, and lookup.
+Those user-facing rules feed a simpler internal model: semantic paths are repository-relative.
 
 That means:
 
@@ -65,10 +65,12 @@ That means:
 
 `src/add.rs`, `src/restore.rs`, and `src/cache.rs` all join repository-relative paths onto `repo.root` before touching the filesystem.
 
-Persisted `Reference.path` values are more specific than that semantic layer:
+Persisted `Reference.path` values use narrower bases:
 
-- in a node `*.jiji` file, file and directory references are stored relative to the node base
-- in a tracked-directory manifest, child file paths are stored relative to the tracked directory root
+- semantic lookup paths stay repository-relative
+- file entries in a node `*.jiji` file are stored relative to the node base
+- directory entries in a node `*.jiji` file are stored relative to the node base
+- child entries in a tracked-directory manifest are stored relative to the tracked directory root
 
 ## Where Paths Are Stored
 
@@ -81,13 +83,13 @@ Tracked files are described by `*.jiji` TOML reference files stored in the track
 
 `src/index.rs` walks the repository for `*.jiji` files and reads them back into the in-memory index.
 
-Those reference files do not store every `Reference.path` as repository-relative. The node itself has a repository-relative location and base, but the contained `Reference.path` values are base-relative.
+Those reference files do not persist every `Reference.path` as repository-relative. The node location and base are repository-relative, but contained file and directory `Reference.path` values are base-relative.
 
 ### Tracked Directory Children
 
-Tracked directories store a directory reference in a `*.jiji` file, and that directory reference points to a cached manifest of children.
+Tracked directories store a directory reference in a `*.jiji` file, and that reference points to a cached manifest of children.
 
-The node path and base stay repository-relative, the directory `Reference.path` in the node is base-relative, and child paths inside the cached manifest are relative to the tracked directory they belong to.
+The node path and base stay repository-relative, the directory entry in the node stays base-relative, and child paths inside the cached manifest stay relative to the tracked directory root.
 
 ### Cache Paths
 

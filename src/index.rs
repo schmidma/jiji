@@ -29,11 +29,13 @@ impl Index {
     pub fn find_owner_mut(&mut self, path: impl AsRef<Utf8Path>) -> Option<&mut Node> {
         let path = path.as_ref();
         self.nodes.iter_mut().find(|node| {
-            node.files.iter().any(|file| path == file.path)
+            node.files
+                .iter()
+                .any(|file| path == node.base.join(&file.path))
                 || node
                     .directories
                     .iter()
-                    .any(|dir| path.starts_with(&dir.path))
+                    .any(|dir| path.starts_with(node.base.join(&dir.path)))
         })
     }
 
@@ -121,7 +123,8 @@ impl Node {
     }
 
     pub fn add_directory(&mut self, path: &Utf8Path) -> Result<&mut Directory> {
-        // Check if already tracked
+        // `path` is relative to this node's `base`, matching how directory entries are stored.
+        // Check if this base-relative directory is already tracked by the node.
         if let Some((i, _)) = self
             .directories
             .iter()
@@ -135,12 +138,12 @@ impl Node {
             return Ok(self.directories.get_mut(i).expect("just found"));
         }
 
-        // Check for existing files that would conflict
+        // Reject a base-relative directory if tracked files already live under it.
         if self.files.iter().any(|file| file.path.starts_with(path)) {
             bail!("cannot add directory '{path}' because it contains tracked files");
         }
 
-        // Check for conflicts with nested directories
+        // Reject overlapping base-relative directories in either direction.
         if let Some(nested) = self
             .directories
             .iter()
@@ -660,6 +663,116 @@ mod test {
     }
 
     #[test]
+    fn index_nested_tracked_directory_round_trips_base_relative_paths() -> Result<()> {
+        let (repo, _tmp, _guard) = setup_repo()?;
+
+        fs::create_dir_all(repo.root.join("foo/bar/images").as_std_path())?;
+        fs::write(repo.root.join("foo/bar/images/photo.jpg"), "image content")?;
+
+        repo.add(["foo/bar/images"])?;
+
+        let reopened = JijiRepository::new(repo.root.clone())?;
+        let index = reopened.index()?;
+        assert_eq!(
+            index.nodes.len(),
+            1,
+            "index should contain exactly one node"
+        );
+
+        let node = &index.nodes[0];
+        assert_eq!(node.path, "foo/bar/images.jiji", "node path should match");
+        assert_eq!(
+            node.base, "foo/bar",
+            "node base should match parent directory"
+        );
+        assert!(node.files.is_empty(), "node should have no direct files");
+        assert_eq!(
+            node.directories.len(),
+            1,
+            "node should contain one tracked directory"
+        );
+        assert_eq!(
+            node.directories[0].path, "images",
+            "directory path should remain relative to the node base"
+        );
+
+        let DirectoryChildren::Resolved(children) = &node.directories[0].children else {
+            panic!("expected directory to be resolved from cache");
+        };
+        assert_eq!(
+            children.len(),
+            1,
+            "tracked directory should contain one file"
+        );
+        assert_eq!(
+            children[0].path, "photo.jpg",
+            "tracked-directory child manifest should remain relative to the tracked directory root"
+        );
+        let photo_hash = hash_file(repo.root.join("foo/bar/images/photo.jpg"))?;
+        assert_eq!(children[0].hash, photo_hash, "child hash should match");
+        assert_eq!(
+            children[0].status,
+            FileStatus::Unknown,
+            "indexed child should start unresolved"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn resolve_status_for_nested_tracked_directory_after_reload() -> Result<()> {
+        let (repo, _tmp, _guard) = setup_repo()?;
+
+        fs::create_dir_all(repo.root.join("nested/dir").as_std_path())?;
+        fs::write(repo.root.join("nested/dir/file.txt"), "original content")?;
+
+        repo.add(["nested/dir"])?;
+
+        fs::write(repo.root.join("nested/dir/file.txt"), "modified content")?;
+
+        let reopened = JijiRepository::new(repo.root.clone())?;
+        let mut index = reopened.index()?;
+        index.resolve_status(&reopened)?;
+
+        assert_eq!(
+            index.nodes.len(),
+            1,
+            "index should contain exactly one node"
+        );
+
+        let node = &index.nodes[0];
+        assert_eq!(node.base, "nested", "node base should round-trip");
+        assert_eq!(
+            node.directories.len(),
+            1,
+            "node should contain one tracked directory"
+        );
+        assert_eq!(
+            node.directories[0].path, "dir",
+            "directory path should remain base-relative after reload"
+        );
+
+        let DirectoryChildren::Resolved(children) = &node.directories[0].children else {
+            panic!("expected directory children to resolve from cache");
+        };
+        assert_eq!(
+            children.len(),
+            1,
+            "tracked directory should contain one file"
+        );
+        assert_eq!(
+            children[0].path, "file.txt",
+            "child path should stay relative"
+        );
+        assert!(
+            matches!(children[0].status, FileStatus::Modified { .. }),
+            "status resolution should inspect the nested tracked file after reload"
+        );
+
+        Ok(())
+    }
+
+    #[test]
     fn index_multiple_nodes() -> Result<()> {
         let (repo, _tmp, _guard) = setup_repo()?;
 
@@ -687,6 +800,52 @@ mod test {
         );
 
         Ok(())
+    }
+
+    #[test]
+    fn find_owner_mut_matches_repo_relative_lookup_against_base_relative_file() {
+        let mut index = Index {
+            nodes: vec![Node {
+                path: "foo/bar/data.jiji".into(),
+                base: "foo/bar".into(),
+                files: vec![File {
+                    path: "file.txt".into(),
+                    hash: Hash::from_bytes([1; 32]),
+                    status: FileStatus::Unknown,
+                }],
+                directories: Vec::new(),
+            }],
+        };
+
+        let owner = index.find_owner_mut("foo/bar/file.txt");
+
+        assert!(
+            owner.is_some(),
+            "repo-relative lookup should match file stored relative to node base"
+        );
+    }
+
+    #[test]
+    fn find_owner_mut_matches_repo_relative_lookup_against_base_relative_directory() {
+        let mut index = Index {
+            nodes: vec![Node {
+                path: "foo/bar/data.jiji".into(),
+                base: "foo/bar".into(),
+                files: Vec::new(),
+                directories: vec![Directory {
+                    path: "images".into(),
+                    hash: None,
+                    children: DirectoryChildren::Resolved(Vec::new()),
+                }],
+            }],
+        };
+
+        let owner = index.find_owner_mut("foo/bar/images/photo.jpg");
+
+        assert!(
+            owner.is_some(),
+            "repo-relative lookup should match directory stored relative to node base"
+        );
     }
 
     #[test]

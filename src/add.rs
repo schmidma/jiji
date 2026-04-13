@@ -61,8 +61,11 @@ impl JijiRepository {
             node.add_file(relative_path, hash)
                 .wrap_err_with(|| format!("failed to add file {path}"))?;
         } else if metadata.is_dir() {
+            let relative_path = path
+                .strip_prefix(&node.base)
+                .expect("path must be relative to base");
             let directory = node
-                .add_directory(path)
+                .add_directory(relative_path)
                 .wrap_err_with(|| format!("failed to add directory {path}"))?;
             for entry in walkdir::WalkDir::new(self.root.join(path))
                 .min_depth(1)
@@ -367,6 +370,45 @@ mod tests {
     }
 
     #[test]
+    fn add_nested_directory_stores_base_relative_entry() -> Result<()> {
+        let (repo, _tmp, _guard) = setup_repo()?;
+
+        fs::create_dir_all("foo/bar/images")?;
+        fs::write("foo/bar/images/photo.jpg", "image content")?;
+
+        repo.add(["foo/bar/images"])?;
+
+        let reference_file = ReferenceFile::read(repo.root.join("foo/bar/images.jiji"))?;
+        assert!(
+            reference_file.files.is_empty(),
+            "no direct files should be tracked"
+        );
+        assert_eq!(
+            reference_file.directories.len(),
+            1,
+            "nested directory should be tracked in the node"
+        );
+        assert_eq!(
+            reference_file.directories[0].path, "images",
+            "directory entry should be stored relative to the node base"
+        );
+
+        let cached_path = repo.cache_path_for(reference_file.directories[0].hash);
+        let cached_reference_file = ReferenceFile::read(cached_path)?;
+        assert_eq!(
+            cached_reference_file.files.len(),
+            1,
+            "one file should be cached"
+        );
+        assert_eq!(
+            cached_reference_file.files[0].path, "photo.jpg",
+            "cached directory contents should remain relative to the tracked directory"
+        );
+
+        Ok(())
+    }
+
+    #[test]
     fn add_empty_directory() -> Result<()> {
         let (repo, _tmp, _guard) = setup_repo()?;
 
@@ -478,6 +520,64 @@ mod tests {
         assert_eq!(
             cached_reference_file.files[1].path, "file2.txt",
             "second file path should match"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn readd_existing_nested_directory_uses_base_relative_entry() -> Result<()> {
+        let (repo, _tmp, _guard) = setup_repo()?;
+
+        fs::create_dir_all("foo/bar/images")?;
+        fs::write("foo/bar/images/photo.jpg", "image content")?;
+        let photo_hash = hash_file("foo/bar/images/photo.jpg")?;
+
+        let mut node = Node {
+            path: "foo/bar/data.jiji".into(),
+            base: "foo/bar".into(),
+            files: Vec::new(),
+            directories: vec![crate::index::Directory {
+                path: "images".into(),
+                hash: None,
+                children: crate::index::DirectoryChildren::Resolved(vec![crate::index::File {
+                    path: "photo.jpg".into(),
+                    hash: photo_hash,
+                    status: crate::index::FileStatus::Staged,
+                }]),
+            }],
+        };
+        node.persist_to_disk(&repo)?;
+
+        let mut index = repo.index()?;
+
+        repo.add_with_index(&mut index, ["foo/bar/images"])?;
+
+        let reference_file = ReferenceFile::read(repo.root.join("foo/bar/data.jiji"))?;
+        assert!(
+            reference_file.files.is_empty(),
+            "no direct files should be tracked"
+        );
+        assert_eq!(
+            reference_file.directories.len(),
+            1,
+            "nested directory should be tracked in the existing node"
+        );
+        assert_eq!(
+            reference_file.directories[0].path, "images",
+            "directory entry should be stored relative to the node base"
+        );
+
+        let cached_path = repo.cache_path_for(reference_file.directories[0].hash);
+        let cached_reference_file = ReferenceFile::read(cached_path)?;
+        assert_eq!(
+            cached_reference_file.files.len(),
+            1,
+            "one file should be cached"
+        );
+        assert_eq!(
+            cached_reference_file.files[0].path, "photo.jpg",
+            "cached directory contents should remain relative to the tracked directory"
         );
 
         Ok(())

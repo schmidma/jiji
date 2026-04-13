@@ -346,6 +346,28 @@ mod tests {
     }
 
     #[test]
+    fn restore_nested_tracked_directory_after_reload() -> Result<()> {
+        let (repo, _tmp, _guard) = setup_repo()?;
+
+        fs::create_dir_all("nested/dir")?;
+        fs::write("nested/dir/file.txt", "original content")?;
+
+        repo.add(["nested/dir"])?;
+
+        fs::write("nested/dir/file.txt", "modified content")?;
+
+        let reopened = JijiRepository::new(repo.root.clone())?;
+        reopened.restore(&["nested/dir"])?;
+
+        assert_eq!(
+            fs::read_to_string("nested/dir/file.txt")?,
+            "original content"
+        );
+
+        Ok(())
+    }
+
+    #[test]
     fn restore_nonexistent_file() -> Result<()> {
         let (repo, _tmp, _guard) = setup_repo()?;
 
