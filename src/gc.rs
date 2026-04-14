@@ -21,10 +21,6 @@ pub struct GarbageCollectionReport {
 impl JijiRepository {
     pub fn gc(&self, dry_run: bool) -> Result<GarbageCollectionReport> {
         let _guard = self.write_lock("gc")?;
-        self.gc_unlocked(dry_run)
-    }
-
-    fn gc_unlocked(&self, dry_run: bool) -> Result<GarbageCollectionReport> {
         let reachable_hashes = self.collect_live_cache_hashes()?;
         let cache_objects = self.collect_cache_objects()?;
 

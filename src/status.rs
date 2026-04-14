@@ -127,10 +127,6 @@ impl JijiRepository {
     /// Prints the repository status in a structured way.
     pub fn status(&self) -> Result<()> {
         let _guard = self.read_lock("status")?;
-        self.status_unlocked()
-    }
-
-    fn status_unlocked(&self) -> Result<()> {
         let mut index = self.index().wrap_err("failed to collect index")?;
         index
             .resolve_status(self)

@@ -15,10 +15,6 @@ use crate::{
 impl JijiRepository {
     pub fn add(&self, paths: impl IntoIterator<Item = impl AsRef<Utf8Path>>) -> Result<Index> {
         let _guard = self.write_lock("add")?;
-        self.add_unlocked(paths)
-    }
-
-    fn add_unlocked(&self, paths: impl IntoIterator<Item = impl AsRef<Utf8Path>>) -> Result<Index> {
         let mut index = self.index().wrap_err("failed to index repository")?;
         self.add_with_index_unlocked(&mut index, paths)?;
         Ok(index)
