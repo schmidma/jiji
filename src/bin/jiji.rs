@@ -190,16 +190,14 @@ fn main() -> Result<()> {
         }
         Command::Push { repository_root } => {
             let repository = resolve_repository_root(repository_root)?;
-            let storage = repository.require_default_storage()?;
             repository
-                .push(&storage)
+                .push_default()
                 .wrap_err("failed to run push command")?;
         }
         Command::Fetch { repository_root } => {
             let repository = resolve_repository_root(repository_root)?;
-            let storage = repository.require_default_storage()?;
             repository
-                .fetch(&storage)
+                .fetch_default()
                 .wrap_err("failed to run fetch command")?;
         }
     }

@@ -240,7 +240,9 @@ impl JijiRepository {
         }
     }
 
-    fn require_default_storage_from_configuration(configuration: &Configuration) -> Result<String> {
+    pub(crate) fn require_default_storage_from_configuration(
+        configuration: &Configuration,
+    ) -> Result<String> {
         let name = configuration.default_storage.clone().ok_or_else(|| {
             color_eyre::eyre::eyre!(
                 "no default storage is configured; set one with `jiji storage default <name>` or inspect configured storages with `jiji storage list`"
