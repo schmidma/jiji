@@ -86,12 +86,13 @@ jiji fetch
 
 ## Repository Locking
 
-Jiji coordinates commands with a repository-wide lock file at `.jiji/.lock`.
+Jiji coordinates its currently lock-integrated commands with a repository-wide lock file at `.jiji/.lock`.
 
-- Read-only commands can hold shared locks at the same time.
-- Commands that mutate repository state or the working tree wait for exclusive access.
-- If a command has to block, Jiji prints a waiting message before sleeping on the lock.
+- Read-only integrated commands can hold shared locks at the same time.
+- Integrated commands that mutate repository state or the working tree wait for exclusive access.
+- If an integrated command has to block, Jiji prints a waiting message before sleeping on the lock.
 - Locking in the current v1 implementation is blocking-only: there is no timeout and no immediate-fail mode.
+- `jiji init` is still a special case: it bootstraps `.jiji/` and creates `.jiji/.lock`, but does not yet acquire the repository lock itself.
 
 Clean unreachable cache objects conservatively:
 

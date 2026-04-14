@@ -34,7 +34,9 @@ Write-locked commands:
 - `jiji push`
 - `jiji fetch`
 
-These classes reflect the current v1 implementation. Commands that mutate repository metadata, cache state, storage configuration, or the working tree take the write lock. Read-only inspection commands take the read lock.
+These classes reflect the current v1 implementation for commands that already participate in repository locking. Integrated commands that mutate repository metadata, cache state, storage configuration, or the working tree take the write lock. Read-only inspection commands take the read lock.
+
+`jiji init` is the current v1 exception. It bootstraps `.jiji/` and creates `.jiji/.lock`, but it does not yet acquire the repository lock the way the integrated read-locked and write-locked commands do.
 
 ## Blocking Behavior
 
