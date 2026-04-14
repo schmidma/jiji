@@ -163,13 +163,13 @@ fn main() -> Result<()> {
             repository_root,
             command,
         } => {
-            let mut repository = resolve_repository_root(repository_root)?;
+            let repository = resolve_repository_root(repository_root)?;
             match command {
                 StorageCommand::List { detail } => {
-                    println!(
-                        "{}",
-                        format_storage_list(&repository.storage_list(), detail)
-                    );
+                    let report = repository
+                        .storage_list()
+                        .wrap_err("failed to list storages")?;
+                    println!("{}", format_storage_list(&report, detail));
                 }
                 StorageCommand::Add { name, uri } => {
                     repository
@@ -192,14 +192,14 @@ fn main() -> Result<()> {
             let repository = resolve_repository_root(repository_root)?;
             let storage = repository.require_default_storage()?;
             repository
-                .push(storage)
+                .push(&storage)
                 .wrap_err("failed to run push command")?;
         }
         Command::Fetch { repository_root } => {
             let repository = resolve_repository_root(repository_root)?;
             let storage = repository.require_default_storage()?;
             repository
-                .fetch(storage)
+                .fetch(&storage)
                 .wrap_err("failed to run fetch command")?;
         }
     }

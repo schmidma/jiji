@@ -82,6 +82,21 @@ impl JijiRepository {
         action(self)
     }
 
+    pub(crate) fn with_write_lock<T>(
+        &self,
+        command: &'static str,
+        action: impl FnOnce(&Self) -> Result<T>,
+    ) -> Result<T> {
+        let lock_path = self.lock_path();
+        let _guard = self.repository_lock()?.acquire(LockMode::Write, || {
+            println!(
+                "Waiting for repository lock at '{}' while running {}...",
+                lock_path, command
+            );
+        })?;
+        action(self)
+    }
+
     /// Returns `path` relative to the repository root.
     /// Relative inputs are resolved from the current working directory.
     pub fn to_repo_relative_path(&self, path: impl AsRef<Utf8Path>) -> Result<Utf8PathBuf> {
