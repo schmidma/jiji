@@ -3,10 +3,10 @@ use std::env::current_dir;
 use camino::{absolute_utf8, Utf8PathBuf};
 use clap::{Parser, Subcommand};
 use color_eyre::{
-    eyre::{bail, Context as _, ContextCompat as _},
+    eyre::{bail, Context as _},
     Result,
 };
-use jiji::JijiRepository;
+use jiji::{GarbageCollectionReport, JijiRepository, StorageListReport};
 use tracing::Level;
 
 #[derive(Debug, Parser)]
@@ -53,6 +53,9 @@ enum Command {
         /// Path to the repository root
         #[clap(short, long)]
         repository_root: Option<Utf8PathBuf>,
+        /// Report unreachable objects without deleting them
+        #[clap(long)]
+        dry_run: bool,
     },
     /// Manage storage backends
     Storage {
@@ -79,7 +82,11 @@ enum Command {
 #[derive(Debug, Subcommand)]
 enum StorageCommand {
     /// List all configured storage backends
-    List,
+    List {
+        /// Show backend details and reconstructed URIs
+        #[clap(long)]
+        detail: bool,
+    },
     /// Add a new storage backend
     Add {
         /// Name of the storage backend
@@ -142,15 +149,27 @@ fn main() -> Result<()> {
                 .status()
                 .wrap_err("failed to run status command")?;
         }
-        Command::GC { .. } => todo!(),
+        Command::GC {
+            repository_root,
+            dry_run,
+        } => {
+            let repository = resolve_repository_root(repository_root)?;
+            let report = repository
+                .gc(dry_run)
+                .wrap_err("failed to run gc command")?;
+            println!("{}", format_gc_report(&report, dry_run));
+        }
         Command::Storage {
             repository_root,
             command,
         } => {
             let mut repository = resolve_repository_root(repository_root)?;
             match command {
-                StorageCommand::List => {
-                    todo!()
+                StorageCommand::List { detail } => {
+                    println!(
+                        "{}",
+                        format_storage_list(&repository.storage_list(), detail)
+                    );
                 }
                 StorageCommand::Add { name, uri } => {
                     repository
@@ -171,20 +190,60 @@ fn main() -> Result<()> {
         }
         Command::Push { repository_root } => {
             let repository = resolve_repository_root(repository_root)?;
-            let storage = repository.config().default_storage.as_ref().wrap_err("no default storage configured. Please specify a storage backend in the repository configuration.")?;
+            let storage = repository.require_default_storage()?;
             repository
                 .push(storage)
                 .wrap_err("failed to run push command")?;
         }
         Command::Fetch { repository_root } => {
             let repository = resolve_repository_root(repository_root)?;
-            let storage = repository.config().default_storage.as_ref().wrap_err("no default storage configured. Please specify a storage backend in the repository configuration.")?;
+            let storage = repository.require_default_storage()?;
             repository
                 .fetch(storage)
                 .wrap_err("failed to run fetch command")?;
         }
     }
     Ok(())
+}
+
+fn format_storage_list(report: &StorageListReport, detail: bool) -> String {
+    let mut lines = vec![format!(
+        "Default storage: {}",
+        report.default_storage.as_deref().unwrap_or("none")
+    )];
+
+    if report.entries.is_empty() {
+        lines.push("No storages configured.".to_string());
+        return lines.join("\n");
+    }
+
+    for entry in &report.entries {
+        let default_suffix = if entry.is_default { " (default)" } else { "" };
+        lines.push(format!("{} [{}]{}", entry.name, entry.kind, default_suffix));
+
+        if detail {
+            lines.push(format!("  uri: {}", entry.uri));
+            for (field, value) in &entry.details {
+                lines.push(format!("  {field}: {value}"));
+            }
+        }
+    }
+
+    lines.join("\n")
+}
+
+fn format_gc_report(report: &GarbageCollectionReport, dry_run: bool) -> String {
+    if dry_run {
+        return format!(
+            "GC dry run complete: kept {} objects, would remove {} objects",
+            report.reachable_objects, report.unreferenced_objects
+        );
+    }
+
+    format!(
+        "GC complete: kept {} objects, removed {} objects",
+        report.reachable_objects, report.removed_objects
+    )
 }
 
 fn resolve_repository_root(repository_root: Option<Utf8PathBuf>) -> Result<JijiRepository> {
@@ -269,6 +328,114 @@ mod tests {
             .iter()
             .map(|path| repository.to_repo_relative_path_from(path, working_directory))
             .collect()
+    }
+
+    #[test]
+    fn format_storage_list_marks_default_and_reports_none() {
+        let empty = StorageListReport {
+            default_storage: None,
+            entries: Vec::new(),
+        };
+
+        assert_eq!(
+            format_storage_list(&empty, false),
+            "Default storage: none\nNo storages configured."
+        );
+
+        let report = StorageListReport {
+            default_storage: Some("backup".to_string()),
+            entries: vec![
+                jiji::StorageListEntry {
+                    name: "backup".to_string(),
+                    kind: "sftp",
+                    uri: "sftp://alice@example.com:/repo".to_string(),
+                    is_default: true,
+                    details: vec![
+                        ("username".to_string(), "alice".to_string()),
+                        ("host".to_string(), "example.com".to_string()),
+                        ("location".to_string(), "/repo".to_string()),
+                    ],
+                },
+                jiji::StorageListEntry {
+                    name: "local".to_string(),
+                    kind: "file",
+                    uri: "file:///tmp/cache".to_string(),
+                    is_default: false,
+                    details: vec![("location".to_string(), "/tmp/cache".to_string())],
+                },
+            ],
+        };
+
+        assert_eq!(
+            format_storage_list(&report, false),
+            "Default storage: backup\nbackup [sftp] (default)\nlocal [file]"
+        );
+    }
+
+    #[test]
+    fn format_storage_list_detail_includes_uri_and_fields() {
+        let report = StorageListReport {
+            default_storage: Some("backup".to_string()),
+            entries: vec![jiji::StorageListEntry {
+                name: "backup".to_string(),
+                kind: "sftp",
+                uri: "sftp://alice@example.com:2222:/repo".to_string(),
+                is_default: true,
+                details: vec![
+                    ("username".to_string(), "alice".to_string()),
+                    ("host".to_string(), "example.com".to_string()),
+                    ("port".to_string(), "2222".to_string()),
+                    ("location".to_string(), "/repo".to_string()),
+                ],
+            }],
+        };
+
+        assert_eq!(
+            format_storage_list(&report, true),
+            "Default storage: backup\nbackup [sftp] (default)\n  uri: sftp://alice@example.com:2222:/repo\n  username: alice\n  host: example.com\n  port: 2222\n  location: /repo"
+        );
+    }
+
+    #[test]
+    fn storage_list_detail_flag_parses() {
+        let arguments = Arguments::try_parse_from(["jiji", "storage", "list", "--detail"])
+            .expect("storage list --detail should parse");
+
+        assert!(matches!(
+            arguments.command,
+            Command::Storage {
+                repository_root: None,
+                command: StorageCommand::List { detail: true },
+            }
+        ));
+    }
+
+    #[test]
+    fn format_gc_report_uses_dry_run_wording() {
+        let report = GarbageCollectionReport {
+            reachable_objects: 4,
+            unreferenced_objects: 2,
+            removed_objects: 0,
+        };
+
+        assert_eq!(
+            format_gc_report(&report, true),
+            "GC dry run complete: kept 4 objects, would remove 2 objects"
+        );
+    }
+
+    #[test]
+    fn gc_dry_run_flag_parses() {
+        let arguments = Arguments::try_parse_from(["jiji", "gc", "--dry-run"])
+            .expect("gc --dry-run should parse");
+
+        assert!(matches!(
+            arguments.command,
+            Command::GC {
+                repository_root: None,
+                dry_run: true,
+            }
+        ));
     }
 
     #[test]

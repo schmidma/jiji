@@ -54,17 +54,44 @@ jiji status
 #     untracked: data/datasets/new_dataset.csv
 ```
 
+Configure storage backends:
+
+```bash
+jiji storage add local file:///srv/jiji-cache
+jiji storage add backup sftp://alice@example.com:/srv/jiji
+```
+
+List configured storages:
+
+```bash
+jiji storage list
+jiji storage list --detail
+```
+
+The first storage you add becomes the default automatically. A repository may also have configured storages with no default at all. Commands that require a default storage, such as `push` and `fetch`, will error with guidance to run `jiji storage default <name>` or inspect `jiji storage list` if none is configured.
+
 Push assets to the configured default storage:
 
 ```bash
 jiji push
 ```
 
-Fetch assets from the configured default storage:
+Fetch assets from the configured default storage into `.jiji/cache`:
 
 ```bash
 jiji fetch
 ```
+
+`jiji fetch` downloads cached objects, but it does not restore files into the working tree by itself. Use `jiji restore` after `fetch` when you want to materialize tracked content back into the repository tree.
+
+Clean unreachable cache objects conservatively:
+
+```bash
+jiji gc --dry-run
+jiji gc
+```
+
+Today, `push` and `fetch` both use the configured default storage. `fetch` downloads objects into `.jiji/cache` and still requires `jiji restore` to write tracked content back into the working tree. `gc --dry-run` reports unreachable cached objects without deleting them, and `gc` removes cached objects that are no longer referenced by tracked files or tracked-directory manifests.
 
 For focused documentation on Jiji's current behavior and internal model, start with [`docs/index.md`](docs/index.md).
 

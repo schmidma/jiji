@@ -1,8 +1,9 @@
 use camino::{Utf8Path, Utf8PathBuf};
-use color_eyre::eyre::{Context as _, Result};
+use color_eyre::eyre::{Context as _, ContextCompat as _, Result};
 use std::{
     fs::{self, File},
     io::Write as _,
+    str::FromStr as _,
 };
 use tracing::debug;
 
@@ -11,6 +12,30 @@ use crate::{
     reference_file::ReferenceFile,
     JijiRepository,
 };
+
+pub(crate) fn cache_relative_path_for(hash: Hash) -> Utf8PathBuf {
+    let hex = hash.to_hex();
+    let (prefix, suffix) = hex.as_str().split_at(2);
+    Utf8PathBuf::from(prefix).join(suffix)
+}
+
+pub(crate) fn parse_cache_relative_hash(path: &Utf8Path) -> Result<Hash> {
+    let mut components = path.components();
+    let prefix = components
+        .next()
+        .wrap_err_with(|| format!("cache path {path} is missing hash prefix"))?
+        .as_str();
+    let suffix = components
+        .next()
+        .wrap_err_with(|| format!("cache path {path} is missing hash suffix"))?
+        .as_str();
+    if components.next().is_some() {
+        color_eyre::eyre::bail!("cache path {path} does not match expected layout");
+    }
+
+    Hash::from_str(&format!("{prefix}{suffix}"))
+        .wrap_err_with(|| format!("cache path {path} does not contain a valid hash"))
+}
 
 impl JijiRepository {
     pub fn cache_file(&self, hash: Hash, path: impl AsRef<Utf8Path>) -> Result<()> {
@@ -51,9 +76,7 @@ impl JijiRepository {
     }
 
     pub fn cache_path_for(&self, hash: Hash) -> Utf8PathBuf {
-        let hex = hash.to_hex();
-        let (prefix, suffix) = hex.as_str().split_at(2);
-        self.cache_root().join(prefix).join(suffix)
+        self.cache_root().join(cache_relative_path_for(hash))
     }
 
     fn cache_data(&self, hash: Hash, data: &[u8]) -> Result<()> {
@@ -84,9 +107,26 @@ impl JijiRepository {
 mod tests {
     use std::fs;
 
+    use camino::Utf8Path;
     use color_eyre::Result;
 
-    use crate::{hashing::hash_file, test_utils::setup_repo};
+    use crate::{
+        cache::{cache_relative_path_for, parse_cache_relative_hash},
+        hashing::{hash_file, Hash},
+        test_utils::setup_repo,
+    };
+
+    #[test]
+    fn cache_layout_helpers_round_trip_hash() -> Result<()> {
+        let hash = Hash::from_bytes([0xabu8; 32]);
+
+        let relative_path = cache_relative_path_for(hash);
+
+        assert_eq!(relative_path, Utf8Path::new("ab").join(&hash.to_hex()[2..]));
+        assert_eq!(parse_cache_relative_hash(&relative_path)?, hash);
+
+        Ok(())
+    }
 
     #[test]
     fn cache_file_uses_repository_root_from_nested_cwd() -> Result<()> {

@@ -4,6 +4,7 @@ mod add;
 mod cache;
 mod configuration;
 mod find_root;
+mod gc;
 mod hashing;
 mod index;
 mod init;
@@ -14,6 +15,8 @@ mod status;
 mod storage;
 mod with_added_extension;
 
+pub use crate::configuration::{StorageListEntry, StorageListReport};
+pub use crate::gc::GarbageCollectionReport;
 pub use reference_file::{Reference, ReferenceFile};
 pub use with_added_extension::WithAddedExtension;
 

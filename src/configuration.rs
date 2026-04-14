@@ -9,9 +9,23 @@ use color_eyre::{
     Result,
 };
 use serde::{Deserialize, Serialize};
-use tracing::warn;
 
 use crate::JijiRepository;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StorageListEntry {
+    pub name: String,
+    pub kind: &'static str,
+    pub uri: String,
+    pub is_default: bool,
+    pub details: Vec<(String, String)>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StorageListReport {
+    pub default_storage: Option<String>,
+    pub entries: Vec<StorageListEntry>,
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SftpConfiguration {
@@ -73,6 +87,56 @@ impl StorageConfiguration {
         }
         bail!("unsupported storage URI scheme in '{uri}'")
     }
+
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Self::Path { .. } => "file",
+            Self::Sftp(_) => "sftp",
+        }
+    }
+
+    pub fn to_uri(&self) -> String {
+        match self {
+            Self::Path { location } => format!("file://{location}"),
+            Self::Sftp(sftp) => {
+                let mut uri = String::from("sftp://");
+                uri.push_str(&sftp.username);
+                if let Some(password) = &sftp.password {
+                    uri.push(':');
+                    uri.push_str(password);
+                }
+                uri.push('@');
+                uri.push_str(&sftp.host);
+                if let Some(port) = sftp.port {
+                    uri.push(':');
+                    uri.push_str(&port.to_string());
+                }
+                uri.push(':');
+                uri.push_str(&sftp.location);
+                uri
+            }
+        }
+    }
+
+    pub fn details(&self) -> Vec<(String, String)> {
+        match self {
+            Self::Path { location } => vec![("location".to_string(), location.to_string())],
+            Self::Sftp(sftp) => {
+                let mut fields = vec![
+                    ("username".to_string(), sftp.username.clone()),
+                    ("host".to_string(), sftp.host.clone()),
+                ];
+                if let Some(password) = &sftp.password {
+                    fields.push(("password".to_string(), password.clone()));
+                }
+                if let Some(port) = sftp.port {
+                    fields.push(("port".to_string(), port.to_string()));
+                }
+                fields.push(("location".to_string(), sftp.location.clone()));
+                fields
+            }
+        }
+    }
 }
 
 #[derive(Clone, Default, Debug, Serialize, Deserialize)]
@@ -126,10 +190,50 @@ impl JijiRepository {
         self.configuration.storages.remove(name);
         if self.configuration.default_storage.as_deref() == Some(name) {
             self.configuration.default_storage = None;
-            warn!("removed storage was the default storage; no default storage is set now");
         }
         let path = self.workspace_root().join("config.toml");
         self.configuration.save(path)
+    }
+
+    pub fn storage_list(&self) -> StorageListReport {
+        let mut entries = self
+            .configuration
+            .storages
+            .iter()
+            .map(|(name, storage)| StorageListEntry {
+                name: name.clone(),
+                kind: storage.kind(),
+                uri: storage.to_uri(),
+                is_default: self.configuration.default_storage.as_deref() == Some(name.as_str()),
+                details: storage.details(),
+            })
+            .collect::<Vec<_>>();
+        entries.sort_by(|left, right| left.name.cmp(&right.name));
+
+        StorageListReport {
+            default_storage: self.configuration.default_storage.clone(),
+            entries,
+        }
+    }
+
+    pub fn default_storage_name(&self) -> Option<&str> {
+        self.configuration.default_storage.as_deref()
+    }
+
+    pub fn require_default_storage(&self) -> Result<&str> {
+        let name = self.default_storage_name().ok_or_else(|| {
+            color_eyre::eyre::eyre!(
+                "no default storage is configured; set one with `jiji storage default <name>` or inspect configured storages with `jiji storage list`"
+            )
+        })?;
+
+        self.configuration.storages.get(name).ok_or_else(|| {
+            color_eyre::eyre::eyre!(
+                "default storage '{name}' was not found in repository configuration"
+            )
+        })?;
+
+        Ok(name)
     }
 
     pub fn set_default_storage(&mut self, name: &str) -> Result<()> {
@@ -141,6 +245,9 @@ impl JijiRepository {
         self.configuration.save(path)
     }
 }
+
+#[cfg(test)]
+use crate::test_utils::setup_repo;
 
 #[cfg(test)]
 #[test]
@@ -191,6 +298,76 @@ fn configuration_roundtrips_file_and_sftp_storage() -> Result<()> {
         }
         other => panic!("expected remote sftp storage, got {other:?}"),
     }
+
+    Ok(())
+}
+
+#[cfg(test)]
+#[test]
+fn storage_list_sorts_entries_and_marks_default() -> Result<()> {
+    let (mut repo, _tmp, _guard) = setup_repo()?;
+    repo.add_storage("zeta", "file:///tmp/zeta")?;
+    repo.add_storage("alpha", "sftp://alice@example.com:/srv/alpha")?;
+    repo.set_default_storage("alpha")?;
+
+    let report = repo.storage_list();
+
+    assert_eq!(report.default_storage.as_deref(), Some("alpha"));
+    assert_eq!(report.entries.len(), 2);
+    assert_eq!(report.entries[0].name, "alpha");
+    assert!(report.entries[0].is_default);
+    assert_eq!(report.entries[0].kind, "sftp");
+    assert_eq!(report.entries[0].uri, "sftp://alice@example.com:/srv/alpha");
+    assert_eq!(
+        report.entries[0].details,
+        vec![
+            ("username".to_string(), "alice".to_string()),
+            ("host".to_string(), "example.com".to_string()),
+            ("location".to_string(), "/srv/alpha".to_string()),
+        ]
+    );
+    assert_eq!(report.entries[1].name, "zeta");
+    assert!(!report.entries[1].is_default);
+    assert_eq!(report.entries[1].kind, "file");
+    assert_eq!(report.entries[1].uri, "file:///tmp/zeta");
+    assert_eq!(
+        report.entries[1].details,
+        vec![("location".to_string(), "/tmp/zeta".to_string())]
+    );
+
+    Ok(())
+}
+
+#[cfg(test)]
+#[test]
+fn remove_storage_can_leave_no_default_selected() -> Result<()> {
+    let (mut repo, _tmp, _guard) = setup_repo()?;
+    repo.add_storage("local", "file:///tmp/local")?;
+    repo.add_storage("backup", "file:///tmp/backup")?;
+
+    repo.remove_storage("local")?;
+
+    assert_eq!(repo.default_storage_name(), None);
+    let report = repo.storage_list();
+    assert_eq!(report.default_storage, None);
+    assert_eq!(report.entries.len(), 1);
+    assert_eq!(report.entries[0].name, "backup");
+    assert!(!report.entries[0].is_default);
+
+    Ok(())
+}
+
+#[cfg(test)]
+#[test]
+fn require_default_storage_errors_with_guidance() -> Result<()> {
+    let (repo, _tmp, _guard) = setup_repo()?;
+
+    let error = repo.require_default_storage().unwrap_err();
+    let message = error.to_string();
+
+    assert!(message.contains("no default storage is configured"));
+    assert!(message.contains("jiji storage default <name>"));
+    assert!(message.contains("jiji storage list"));
 
     Ok(())
 }

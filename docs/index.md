@@ -7,3 +7,4 @@ The docs stay intentionally small: each page should explain one important part o
 ## Deep Dives
 
 - [`deep-dives/paths.md`](deep-dives/paths.md): how Jiji interprets, normalizes, stores, and acts on paths
+- [`deep-dives/storage.md`](deep-dives/storage.md): how storage backends, defaults, push/fetch selection, and cache garbage collection work today
