@@ -126,7 +126,8 @@ impl StatusReport {
 impl JijiRepository {
     /// Prints the repository status in a structured way.
     pub fn status(&self) -> Result<()> {
-        self.with_read_lock("status", |repo| repo.status_unlocked())
+        let _guard = self.read_lock("status")?;
+        self.status_unlocked()
     }
 
     fn status_unlocked(&self) -> Result<()> {

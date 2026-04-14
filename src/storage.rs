@@ -234,33 +234,29 @@ impl JijiRepository {
     }
 
     pub fn push(&self, storage_name: &str) -> Result<()> {
-        self.with_write_lock("push", |repository| {
-            let configuration = repository.load_configuration_fresh()?;
-            repository.push_with_configuration(&configuration, storage_name)
-        })
+        let _guard = self.write_lock("push")?;
+        let configuration = self.load_configuration_fresh()?;
+        self.push_with_configuration(&configuration, storage_name)
     }
 
     pub fn push_default(&self) -> Result<()> {
-        self.with_write_lock("push", |repository| {
-            let configuration = repository.load_configuration_fresh()?;
-            let storage_name = Self::require_default_storage_from_configuration(&configuration)?;
-            repository.push_with_configuration(&configuration, &storage_name)
-        })
+        let _guard = self.write_lock("push")?;
+        let configuration = self.load_configuration_fresh()?;
+        let storage_name = Self::require_default_storage_from_configuration(&configuration)?;
+        self.push_with_configuration(&configuration, &storage_name)
     }
 
     pub fn fetch(&self, storage_name: &str) -> Result<()> {
-        self.with_write_lock("fetch", |repository| {
-            let configuration = repository.load_configuration_fresh()?;
-            repository.fetch_with_configuration(&configuration, storage_name)
-        })
+        let _guard = self.write_lock("fetch")?;
+        let configuration = self.load_configuration_fresh()?;
+        self.fetch_with_configuration(&configuration, storage_name)
     }
 
     pub fn fetch_default(&self) -> Result<()> {
-        self.with_write_lock("fetch", |repository| {
-            let configuration = repository.load_configuration_fresh()?;
-            let storage_name = Self::require_default_storage_from_configuration(&configuration)?;
-            repository.fetch_with_configuration(&configuration, &storage_name)
-        })
+        let _guard = self.write_lock("fetch")?;
+        let configuration = self.load_configuration_fresh()?;
+        let storage_name = Self::require_default_storage_from_configuration(&configuration)?;
+        self.fetch_with_configuration(&configuration, &storage_name)
     }
 }
 

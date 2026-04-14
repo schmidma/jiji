@@ -20,7 +20,8 @@ pub struct GarbageCollectionReport {
 
 impl JijiRepository {
     pub fn gc(&self, dry_run: bool) -> Result<GarbageCollectionReport> {
-        self.with_write_lock("gc", |repo| repo.gc_unlocked(dry_run))
+        let _guard = self.write_lock("gc")?;
+        self.gc_unlocked(dry_run)
     }
 
     fn gc_unlocked(&self, dry_run: bool) -> Result<GarbageCollectionReport> {

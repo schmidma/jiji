@@ -14,7 +14,8 @@ use crate::{
 
 impl JijiRepository {
     pub fn add(&self, paths: impl IntoIterator<Item = impl AsRef<Utf8Path>>) -> Result<Index> {
-        self.with_write_lock("add", |repo| repo.add_unlocked(paths))
+        let _guard = self.write_lock("add")?;
+        self.add_unlocked(paths)
     }
 
     fn add_unlocked(&self, paths: impl IntoIterator<Item = impl AsRef<Utf8Path>>) -> Result<Index> {

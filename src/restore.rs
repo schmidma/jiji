@@ -20,7 +20,8 @@ impl JijiRepository {
     ///
     /// For example, restoring `foo/bar` will restore `foo/bar/data.txt` but not `foo/bar_asdf`.
     pub fn restore(&self, paths: &[impl AsRef<Utf8Path> + Debug]) -> Result<()> {
-        self.with_write_lock("restore", |repo| repo.restore_unlocked(paths))
+        let _guard = self.write_lock("restore")?;
+        self.restore_unlocked(paths)
     }
 
     fn restore_unlocked(&self, paths: &[impl AsRef<Utf8Path> + Debug]) -> Result<()> {

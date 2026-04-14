@@ -259,41 +259,36 @@ impl JijiRepository {
     }
 
     pub fn add_storage(&self, name: &str, uri: &str) -> Result<()> {
-        self.with_write_lock("storage add", |repository| {
-            let mut configuration = repository.load_configuration_fresh()?;
-            Self::add_storage_to_configuration(&mut configuration, name, uri)?;
-            repository.save_configuration(&configuration)
-        })
+        let _guard = self.write_lock("storage add")?;
+        let mut configuration = self.load_configuration_fresh()?;
+        Self::add_storage_to_configuration(&mut configuration, name, uri)?;
+        self.save_configuration(&configuration)
     }
 
     pub fn remove_storage(&self, name: &str) -> Result<()> {
-        self.with_write_lock("storage remove", |repository| {
-            let mut configuration = repository.load_configuration_fresh()?;
-            Self::remove_storage_from_configuration(&mut configuration, name)?;
-            repository.save_configuration(&configuration)
-        })
+        let _guard = self.write_lock("storage remove")?;
+        let mut configuration = self.load_configuration_fresh()?;
+        Self::remove_storage_from_configuration(&mut configuration, name)?;
+        self.save_configuration(&configuration)
     }
 
     pub fn storage_list(&self) -> Result<StorageListReport> {
-        self.with_read_lock("storage list", |repository| {
-            let configuration = repository.load_configuration_fresh()?;
-            Ok(Self::storage_list_from_configuration(&configuration))
-        })
+        let _guard = self.read_lock("storage list")?;
+        let configuration = self.load_configuration_fresh()?;
+        Ok(Self::storage_list_from_configuration(&configuration))
     }
 
     pub fn require_default_storage(&self) -> Result<String> {
-        self.with_read_lock("push/fetch", |repository| {
-            let configuration = repository.load_configuration_fresh()?;
-            Self::require_default_storage_from_configuration(&configuration)
-        })
+        let _guard = self.read_lock("push/fetch")?;
+        let configuration = self.load_configuration_fresh()?;
+        Self::require_default_storage_from_configuration(&configuration)
     }
 
     pub fn set_default_storage(&self, name: &str) -> Result<()> {
-        self.with_write_lock("storage default", |repository| {
-            let mut configuration = repository.load_configuration_fresh()?;
-            Self::set_default_storage_in_configuration(&mut configuration, name)?;
-            repository.save_configuration(&configuration)
-        })
+        let _guard = self.write_lock("storage default")?;
+        let mut configuration = self.load_configuration_fresh()?;
+        Self::set_default_storage_in_configuration(&mut configuration, name)?;
+        self.save_configuration(&configuration)
     }
 }
 

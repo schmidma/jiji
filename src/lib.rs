@@ -26,7 +26,7 @@ use color_eyre::{eyre::Context as _, Result};
 use std::env::current_dir;
 
 use crate::configuration::Configuration;
-use crate::locking::LockMode;
+use crate::locking::{LockMode, RepositoryLockGuard};
 use crate::relative_path::AsRelativePath as _;
 
 #[derive(Debug)]
@@ -67,34 +67,22 @@ impl JijiRepository {
         crate::locking::RepositoryLock::new(self.lock_path().as_std_path())
     }
 
-    pub(crate) fn with_read_lock<T>(
-        &self,
-        command: &'static str,
-        action: impl FnOnce(&Self) -> Result<T>,
-    ) -> Result<T> {
+    fn acquire_lock(&self, mode: LockMode, command: &'static str) -> Result<RepositoryLockGuard> {
         let lock_path = self.lock_path();
-        let _guard = self.repository_lock()?.acquire(LockMode::Read, || {
+        self.repository_lock()?.acquire(mode, || {
             println!(
                 "Waiting for repository lock at '{}' while running {}...",
                 lock_path, command
             );
-        })?;
-        action(self)
+        })
     }
 
-    pub(crate) fn with_write_lock<T>(
-        &self,
-        command: &'static str,
-        action: impl FnOnce(&Self) -> Result<T>,
-    ) -> Result<T> {
-        let lock_path = self.lock_path();
-        let _guard = self.repository_lock()?.acquire(LockMode::Write, || {
-            println!(
-                "Waiting for repository lock at '{}' while running {}...",
-                lock_path, command
-            );
-        })?;
-        action(self)
+    pub(crate) fn read_lock(&self, command: &'static str) -> Result<RepositoryLockGuard> {
+        self.acquire_lock(LockMode::Read, command)
+    }
+
+    pub(crate) fn write_lock(&self, command: &'static str) -> Result<RepositoryLockGuard> {
+        self.acquire_lock(LockMode::Write, command)
     }
 
     /// Returns `path` relative to the repository root.
@@ -178,9 +166,11 @@ mod test_utils;
 
 #[cfg(test)]
 mod tests {
+    use std::{sync::mpsc, thread, time::Duration};
+
     use tempfile::tempdir;
 
-    use crate::test_utils::CurrentDirGuard;
+    use crate::test_utils::{setup_repo, CurrentDirGuard};
 
     use super::*;
 
@@ -323,6 +313,34 @@ mod tests {
         let path = repo.to_user_facing_path("nested/deeper/file.txt")?;
 
         assert_eq!(path, "file.txt");
+
+        Ok(())
+    }
+
+    #[test]
+    fn read_lock_returns_guard_that_blocks_writer_until_drop() -> Result<()> {
+        let (repo, _tmp, _guard) = setup_repo()?;
+        let read_guard = repo.read_lock("test read")?;
+        let (finished_tx, finished_rx) = mpsc::channel();
+
+        thread::scope(|scope| {
+            scope.spawn(|| {
+                let writer_result = repo.write_lock("test write").map(|_guard| ());
+                finished_tx
+                    .send(writer_result)
+                    .expect("writer result should send");
+            });
+
+            assert!(finished_rx.recv_timeout(Duration::from_millis(50)).is_err());
+
+            drop(read_guard);
+
+            finished_rx
+                .recv_timeout(Duration::from_secs(1))
+                .expect("writer should finish after read guard is dropped")?;
+
+            Ok::<_, color_eyre::Report>(())
+        })?;
 
         Ok(())
     }
