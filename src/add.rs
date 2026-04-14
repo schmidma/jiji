@@ -19,11 +19,11 @@ impl JijiRepository {
 
     fn add_unlocked(&self, paths: impl IntoIterator<Item = impl AsRef<Utf8Path>>) -> Result<Index> {
         let mut index = self.index().wrap_err("failed to index repository")?;
-        self.add_with_index(&mut index, paths)?;
+        self.add_with_index_unlocked(&mut index, paths)?;
         Ok(index)
     }
 
-    pub fn add_with_index(
+    fn add_with_index_unlocked(
         &self,
         index: &mut Index,
         paths: impl IntoIterator<Item = impl AsRef<Utf8Path>>,
@@ -589,7 +589,7 @@ mod tests {
 
         let mut index = repo.index()?;
 
-        repo.add_with_index(&mut index, ["foo/bar/images"])?;
+        repo.add_with_index_unlocked(&mut index, ["foo/bar/images"])?;
 
         let reference_file = ReferenceFile::read(repo.root.join("foo/bar/data.jiji"))?;
         assert!(
