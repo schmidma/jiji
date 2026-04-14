@@ -1,4 +1,4 @@
-use std::fs::create_dir_all;
+use std::fs::{create_dir_all, OpenOptions};
 
 use camino::Utf8PathBuf;
 use color_eyre::{eyre::Context as _, Result};
@@ -24,6 +24,13 @@ impl JijiRepository {
         if !repository.cache_root().exists() {
             create_dir_all(repository.cache_root()).wrap_err("failed to create cache directory")?;
         }
+
+        OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(repository.lock_path())
+            .wrap_err("failed to create repository lock file")?;
 
         let config_path = repository.workspace_root().join("config.toml");
         if !config_path.exists() {
@@ -61,6 +68,21 @@ mod test {
             ".jiji workspace should exist"
         );
         assert!(repo.cache_root().exists(), ".jiji/cache should exist");
+
+        Ok(())
+    }
+
+    #[test]
+    fn init_creates_repository_lock_file() -> Result<()> {
+        let tmp = tempdir()?;
+        let repo_path = <&Utf8Path>::try_from(tmp.path()).unwrap();
+
+        let repo = JijiRepository::init(repo_path)?;
+
+        assert!(
+            repo.workspace_root().join(".lock").exists(),
+            ".jiji/.lock should exist"
+        );
 
         Ok(())
     }

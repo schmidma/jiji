@@ -26,6 +26,7 @@ use color_eyre::{eyre::Context as _, Result};
 use std::env::current_dir;
 
 use crate::configuration::Configuration;
+use crate::locking::LockMode;
 use crate::relative_path::AsRelativePath as _;
 
 #[derive(Debug)]
@@ -54,8 +55,31 @@ impl JijiRepository {
         self.workspace_root().join("cache")
     }
 
+    pub(crate) fn lock_path(&self) -> Utf8PathBuf {
+        self.workspace_root().join(".lock")
+    }
+
     pub fn config(&self) -> &Configuration {
         &self.configuration
+    }
+
+    pub(crate) fn repository_lock(&self) -> Result<crate::locking::RepositoryLock> {
+        crate::locking::RepositoryLock::new(self.lock_path().as_std_path())
+    }
+
+    pub(crate) fn with_read_lock<T>(
+        &self,
+        command: &'static str,
+        action: impl FnOnce(&Self) -> Result<T>,
+    ) -> Result<T> {
+        let lock_path = self.lock_path();
+        let _guard = self.repository_lock()?.acquire(LockMode::Read, || {
+            println!(
+                "Waiting for repository lock at '{}' while running {}...",
+                lock_path, command
+            );
+        })?;
+        action(self)
     }
 
     /// Returns `path` relative to the repository root.
