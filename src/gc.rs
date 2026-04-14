@@ -20,6 +20,10 @@ pub struct GarbageCollectionReport {
 
 impl JijiRepository {
     pub fn gc(&self, dry_run: bool) -> Result<GarbageCollectionReport> {
+        self.with_write_lock("gc", |repo| repo.gc_unlocked(dry_run))
+    }
+
+    fn gc_unlocked(&self, dry_run: bool) -> Result<GarbageCollectionReport> {
         let reachable_hashes = self.collect_live_cache_hashes()?;
         let cache_objects = self.collect_cache_objects()?;
 
@@ -132,13 +136,14 @@ impl JijiRepository {
 
 #[cfg(test)]
 mod tests {
-    use std::fs;
+    use std::{fs, sync::mpsc, thread, time::Duration};
 
     use camino::Utf8Path;
     use color_eyre::{eyre::ContextCompat as _, Result};
 
     use crate::{
         hashing::{hash_bytes, hash_file, Hash},
+        locking::LockMode,
         test_utils::setup_repo,
         JijiRepository, Reference, ReferenceFile,
     };
@@ -187,6 +192,39 @@ mod tests {
             !repo.cache_path_for(unused_hash).exists(),
             "gc should remove unreferenced cache objects"
         );
+
+        Ok(())
+    }
+
+    #[test]
+    fn gc_blocks_while_read_lock_held() -> Result<()> {
+        let (repo, _tmp, _guard) = setup_repo()?;
+
+        write_tracked_file(&repo, "tracked.txt", b"tracked")?;
+
+        let read_guard = repo.repository_lock()?.acquire(LockMode::Read, || {})?;
+        let (finished_tx, finished_rx) = mpsc::channel();
+
+        thread::scope(|scope| {
+            scope.spawn(|| {
+                finished_tx
+                    .send(repo.gc(true))
+                    .expect("gc result should send");
+            });
+
+            thread::sleep(Duration::from_millis(150));
+            assert!(
+                finished_rx.try_recv().is_err(),
+                "gc should stay blocked while a read lock is held"
+            );
+
+            drop(read_guard);
+
+            finished_rx
+                .recv_timeout(Duration::from_secs(1))
+                .expect("gc should complete after the read lock is released")
+                .expect("gc should succeed once the lock is available");
+        });
 
         Ok(())
     }

@@ -14,6 +14,10 @@ use crate::{
 
 impl JijiRepository {
     pub fn add(&self, paths: impl IntoIterator<Item = impl AsRef<Utf8Path>>) -> Result<Index> {
+        self.with_write_lock("add", |repo| repo.add_unlocked(paths))
+    }
+
+    fn add_unlocked(&self, paths: impl IntoIterator<Item = impl AsRef<Utf8Path>>) -> Result<Index> {
         let mut index = self.index().wrap_err("failed to index repository")?;
         self.add_with_index(&mut index, paths)?;
         Ok(index)
@@ -111,10 +115,10 @@ impl JijiRepository {
 
 #[cfg(test)]
 mod tests {
-    use std::fs;
+    use std::{fs, sync::mpsc, thread, time::Duration};
 
     use crate::{
-        reference_file::ReferenceFile, test_utils::setup_repo,
+        locking::LockMode, reference_file::ReferenceFile, test_utils::setup_repo,
         with_added_extension::WithAddedExtension as _,
     };
 
@@ -179,6 +183,38 @@ mod tests {
             reference_file.directories.is_empty(),
             "reference file should not contain directories"
         );
+
+        Ok(())
+    }
+
+    #[test]
+    fn add_blocks_while_read_lock_held() -> Result<()> {
+        let (repo, _tmp, _guard) = setup_repo()?;
+        fs::write("file.txt", "file content")?;
+
+        let read_guard = repo.repository_lock()?.acquire(LockMode::Read, || {})?;
+        let (finished_tx, finished_rx) = mpsc::channel();
+
+        thread::scope(|scope| {
+            scope.spawn(|| {
+                finished_tx
+                    .send(repo.add(["file.txt"]))
+                    .expect("add result should send");
+            });
+
+            thread::sleep(Duration::from_millis(150));
+            assert!(
+                finished_rx.try_recv().is_err(),
+                "add should stay blocked while a read lock is held"
+            );
+
+            drop(read_guard);
+
+            finished_rx
+                .recv_timeout(Duration::from_secs(1))
+                .expect("add should complete after the read lock is released")
+                .expect("add should succeed once the lock is available");
+        });
 
         Ok(())
     }
