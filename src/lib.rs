@@ -25,26 +25,19 @@ use camino::{absolute_utf8, Utf8Component, Utf8Path, Utf8PathBuf};
 use color_eyre::{eyre::Context as _, Result};
 use std::env::current_dir;
 
-use crate::configuration::Configuration;
 use crate::locking::{LockMode, RepositoryLockGuard};
 use crate::relative_path::AsRelativePath as _;
 
 #[derive(Debug)]
 pub struct JijiRepository {
     root: Utf8PathBuf,
-    configuration: Configuration,
 }
 
 impl JijiRepository {
     const WORKSPACE_DIR: &'static str = ".jiji";
 
     pub fn new(root: Utf8PathBuf) -> Result<Self> {
-        let configuration = Configuration::load(root.join(Self::WORKSPACE_DIR).join("config.toml"))
-            .wrap_err("failed to load repository configuration")?;
-        Ok(Self {
-            root,
-            configuration,
-        })
+        Ok(Self { root })
     }
 
     pub fn workspace_root(&self) -> Utf8PathBuf {
@@ -57,10 +50,6 @@ impl JijiRepository {
 
     pub(crate) fn lock_path(&self) -> Utf8PathBuf {
         self.workspace_root().join(".lock")
-    }
-
-    pub fn config(&self) -> &Configuration {
-        &self.configuration
     }
 
     pub(crate) fn repository_lock(&self) -> Result<crate::locking::RepositoryLock> {
@@ -166,7 +155,7 @@ mod test_utils;
 
 #[cfg(test)]
 mod tests {
-    use std::{sync::mpsc, thread, time::Duration};
+    use std::{fs, sync::mpsc, thread, time::Duration};
 
     use tempfile::tempdir;
 
@@ -185,6 +174,23 @@ mod tests {
             relative, path,
             "nested file should resolve with its full relative path"
         );
+
+        Ok(())
+    }
+
+    #[test]
+    fn new_ignores_malformed_configuration_until_configuration_is_requested() -> Result<()> {
+        let repo_dir = tempdir()?;
+        let repo_root = <&Utf8Path>::try_from(repo_dir.path())?;
+        fs::create_dir_all(repo_root.join(".jiji").as_std_path())?;
+        fs::write(
+            repo_root.join(".jiji/config.toml").as_std_path(),
+            "not = [valid toml",
+        )?;
+
+        let repo = JijiRepository::new(repo_root.to_owned())?;
+
+        assert_eq!(repo.workspace_root(), repo_root.join(".jiji"));
 
         Ok(())
     }
