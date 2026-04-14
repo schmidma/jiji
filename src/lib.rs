@@ -8,7 +8,7 @@ mod gc;
 mod hashing;
 mod index;
 mod init;
-pub mod locking;
+mod locking;
 mod reference_file;
 mod relative_path;
 mod restore;
