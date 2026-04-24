@@ -8,6 +8,7 @@ mod gc;
 mod hashing;
 mod index;
 mod init;
+mod locking;
 mod reference_file;
 mod relative_path;
 mod restore;
@@ -25,25 +26,19 @@ use camino::{absolute_utf8, Utf8Component, Utf8Path, Utf8PathBuf};
 use color_eyre::{eyre::Context as _, Result};
 use std::env::current_dir;
 
-use crate::configuration::Configuration;
+use crate::locking::{LockMode, RepositoryLockGuard};
 use crate::relative_path::AsRelativePath as _;
 
 #[derive(Debug)]
 pub struct JijiRepository {
     root: Utf8PathBuf,
-    configuration: Configuration,
 }
 
 impl JijiRepository {
     const WORKSPACE_DIR: &'static str = ".jiji";
 
     pub fn new(root: Utf8PathBuf) -> Result<Self> {
-        let configuration = Configuration::load(root.join(Self::WORKSPACE_DIR).join("config.toml"))
-            .wrap_err("failed to load repository configuration")?;
-        Ok(Self {
-            root,
-            configuration,
-        })
+        Ok(Self { root })
     }
 
     pub fn workspace_root(&self) -> Utf8PathBuf {
@@ -54,8 +49,30 @@ impl JijiRepository {
         self.workspace_root().join("cache")
     }
 
-    pub fn config(&self) -> &Configuration {
-        &self.configuration
+    pub(crate) fn lock_path(&self) -> Utf8PathBuf {
+        self.workspace_root().join(".lock")
+    }
+
+    pub(crate) fn repository_lock(&self) -> Result<crate::locking::RepositoryLock> {
+        crate::locking::RepositoryLock::new(self.lock_path().as_std_path())
+    }
+
+    fn acquire_lock(&self, mode: LockMode, command: &'static str) -> Result<RepositoryLockGuard> {
+        let lock_path = self.lock_path();
+        self.repository_lock()?.acquire(mode, || {
+            eprintln!(
+                "Waiting for repository lock at '{}' while running {}...",
+                lock_path, command
+            );
+        })
+    }
+
+    pub(crate) fn read_lock(&self, command: &'static str) -> Result<RepositoryLockGuard> {
+        self.acquire_lock(LockMode::Read, command)
+    }
+
+    pub(crate) fn write_lock(&self, command: &'static str) -> Result<RepositoryLockGuard> {
+        self.acquire_lock(LockMode::Write, command)
     }
 
     /// Returns `path` relative to the repository root.
@@ -139,9 +156,11 @@ mod test_utils;
 
 #[cfg(test)]
 mod tests {
+    use std::{fs, sync::mpsc, thread, time::Duration};
+
     use tempfile::tempdir;
 
-    use crate::test_utils::CurrentDirGuard;
+    use crate::test_utils::{setup_repo, CurrentDirGuard};
 
     use super::*;
 
@@ -156,6 +175,23 @@ mod tests {
             relative, path,
             "nested file should resolve with its full relative path"
         );
+
+        Ok(())
+    }
+
+    #[test]
+    fn new_ignores_malformed_configuration_until_configuration_is_requested() -> Result<()> {
+        let repo_dir = tempdir()?;
+        let repo_root = <&Utf8Path>::try_from(repo_dir.path())?;
+        fs::create_dir_all(repo_root.join(".jiji").as_std_path())?;
+        fs::write(
+            repo_root.join(".jiji/config.toml").as_std_path(),
+            "not = [valid toml",
+        )?;
+
+        let repo = JijiRepository::new(repo_root.to_owned())?;
+
+        assert_eq!(repo.workspace_root(), repo_root.join(".jiji"));
 
         Ok(())
     }
@@ -284,6 +320,34 @@ mod tests {
         let path = repo.to_user_facing_path("nested/deeper/file.txt")?;
 
         assert_eq!(path, "file.txt");
+
+        Ok(())
+    }
+
+    #[test]
+    fn read_lock_returns_guard_that_blocks_writer_until_drop() -> Result<()> {
+        let (repo, _tmp, _guard) = setup_repo()?;
+        let read_guard = repo.read_lock("test read")?;
+        let (finished_tx, finished_rx) = mpsc::channel();
+
+        thread::scope(|scope| {
+            scope.spawn(|| {
+                let writer_result = repo.write_lock("test write").map(|_guard| ());
+                finished_tx
+                    .send(writer_result)
+                    .expect("writer result should send");
+            });
+
+            assert!(finished_rx.recv_timeout(Duration::from_millis(50)).is_err());
+
+            drop(read_guard);
+
+            finished_rx
+                .recv_timeout(Duration::from_secs(1))
+                .expect("writer should finish after read guard is dropped")?;
+
+            Ok::<_, color_eyre::Report>(())
+        })?;
 
         Ok(())
     }

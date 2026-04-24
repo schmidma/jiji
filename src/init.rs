@@ -1,4 +1,4 @@
-use std::fs::create_dir_all;
+use std::fs::{create_dir_all, OpenOptions};
 
 use camino::Utf8PathBuf;
 use color_eyre::{eyre::Context as _, Result};
@@ -21,6 +21,10 @@ impl JijiRepository {
             );
         }
 
+        repository.ensure_lock_file()?;
+
+        let _guard = repository.write_lock("init")?;
+
         if !repository.cache_root().exists() {
             create_dir_all(repository.cache_root()).wrap_err("failed to create cache directory")?;
         }
@@ -37,14 +41,67 @@ impl JijiRepository {
     }
 
     pub fn is_initialized(&self) -> bool {
-        self.workspace_root().exists()
+        self.workspace_root().is_dir()
+            && self.cache_root().is_dir()
+            && self.lock_path().is_file()
+            && self.workspace_root().join("config.toml").is_file()
+    }
+
+    #[doc(hidden)]
+    pub fn ensure_initialized_or_migrate_lock(&self) -> Result<bool> {
+        if self.is_initialized() {
+            return Ok(true);
+        }
+
+        if self.is_legacy_initialized_without_lock() {
+            self.ensure_lock_file()?;
+            return Ok(true);
+        }
+
+        if self.lock_path().is_file() {
+            let guard = self.read_lock("repository initialization")?;
+            drop(guard);
+
+            if self.is_initialized() {
+                return Ok(true);
+            }
+
+            if self.is_legacy_initialized_without_lock() {
+                self.ensure_lock_file()?;
+                return Ok(true);
+            }
+        }
+
+        Ok(false)
+    }
+
+    pub(crate) fn ensure_lock_file(&self) -> Result<()> {
+        OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(self.lock_path())
+            .wrap_err("failed to create repository lock file")?;
+
+        Ok(())
+    }
+
+    fn is_legacy_initialized_without_lock(&self) -> bool {
+        self.workspace_root().is_dir()
+            && self.cache_root().is_dir()
+            && !self.lock_path().exists()
+            && self.workspace_root().join("config.toml").is_file()
     }
 }
 
 #[cfg(test)]
 mod test {
+    use std::{sync::mpsc, thread, time::Duration};
+
     use camino::Utf8Path;
     use tempfile::tempdir;
+
+    use crate::locking::{LockMode, RepositoryLock};
 
     use super::*;
 
@@ -61,6 +118,21 @@ mod test {
             ".jiji workspace should exist"
         );
         assert!(repo.cache_root().exists(), ".jiji/cache should exist");
+
+        Ok(())
+    }
+
+    #[test]
+    fn init_creates_repository_lock_file() -> Result<()> {
+        let tmp = tempdir()?;
+        let repo_path = <&Utf8Path>::try_from(tmp.path()).unwrap();
+
+        let repo = JijiRepository::init(repo_path)?;
+
+        assert!(
+            repo.workspace_root().join(".lock").exists(),
+            ".jiji/.lock should exist"
+        );
 
         Ok(())
     }
@@ -92,6 +164,61 @@ mod test {
             !repo.is_initialized(),
             "empty repo should not be initialized"
         );
+
+        Ok(())
+    }
+
+    #[test]
+    fn is_initialized_false_when_workspace_is_incomplete() -> Result<()> {
+        let tmp = tempdir()?;
+        let repo_path = <&Utf8Path>::try_from(tmp.path()).unwrap();
+        let repo = JijiRepository::new(repo_path.to_owned())?;
+
+        create_dir_all(repo.workspace_root())?;
+
+        assert!(
+            !repo.is_initialized(),
+            "workspace directory alone should not count as initialized"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn init_waits_for_existing_repository_lock() -> Result<()> {
+        let tmp = tempdir()?;
+        let repo_path = <&Utf8Path>::try_from(tmp.path()).unwrap();
+        let workspace = repo_path.join(".jiji");
+        create_dir_all(&workspace)?;
+
+        let lock_path = workspace.join(".lock");
+        let lock = RepositoryLock::new(lock_path.as_std_path())?;
+        let lock_guard = lock.acquire(LockMode::Write, || {})?;
+
+        let (finished_tx, finished_rx) = mpsc::channel();
+
+        thread::scope(|scope| {
+            scope.spawn(|| {
+                finished_tx
+                    .send(JijiRepository::init(repo_path.to_owned()))
+                    .expect("init result should send");
+            });
+
+            thread::sleep(Duration::from_millis(150));
+            assert!(
+                finished_rx.try_recv().is_err(),
+                "init should wait while the repository lock is held"
+            );
+
+            drop(lock_guard);
+
+            let initialized = finished_rx
+                .recv_timeout(Duration::from_secs(1))
+                .expect("init should finish after lock release")?;
+            assert!(initialized.is_initialized());
+
+            Ok::<_, color_eyre::Report>(())
+        })?;
 
         Ok(())
     }

@@ -18,6 +18,8 @@ impl JijiRepository {
             bail!("at least one path is required");
         }
 
+        let _guard = self.write_lock("untrack")?;
+
         let selected_paths = paths
             .iter()
             .map(|path| self.to_repo_relative_path(path.as_ref()))
@@ -205,11 +207,11 @@ fn persist_node_after_untrack(repo: &JijiRepository, node: &Node) -> Result<()> 
 
 #[cfg(test)]
 mod tests {
-    use std::fs;
+    use std::{fs, sync::mpsc, thread, time::Duration};
 
     use color_eyre::Result;
 
-    use crate::{reference_file::ReferenceFile, test_utils::setup_repo};
+    use crate::{locking::LockMode, reference_file::ReferenceFile, test_utils::setup_repo};
 
     #[test]
     fn untrack_direct_file_removes_reference_and_keeps_working_file() -> Result<()> {
@@ -240,6 +242,40 @@ mod tests {
 
         assert!(cache_path.exists());
         assert_eq!(fs::read_to_string(cache_path)?, "file content");
+
+        Ok(())
+    }
+
+    #[test]
+    fn untrack_blocks_while_read_lock_held() -> Result<()> {
+        let (repo, _tmp, _guard) = setup_repo()?;
+
+        fs::write("file.txt", "file content")?;
+        repo.add(["file.txt"])?;
+
+        let read_guard = repo.repository_lock()?.acquire(LockMode::Read, || {})?;
+        let (finished_tx, finished_rx) = mpsc::channel();
+
+        thread::scope(|scope| {
+            scope.spawn(|| {
+                finished_tx
+                    .send(repo.untrack(&["file.txt"]))
+                    .expect("untrack result should send");
+            });
+
+            thread::sleep(Duration::from_millis(150));
+            assert!(
+                finished_rx.try_recv().is_err(),
+                "untrack should stay blocked while a read lock is held"
+            );
+
+            drop(read_guard);
+
+            finished_rx
+                .recv_timeout(Duration::from_secs(1))
+                .expect("untrack should complete after the read lock is released")
+                .expect("untrack should succeed once the lock is available");
+        });
 
         Ok(())
     }

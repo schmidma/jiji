@@ -38,7 +38,7 @@ pub(crate) fn parse_cache_relative_hash(path: &Utf8Path) -> Result<Hash> {
 }
 
 impl JijiRepository {
-    pub fn cache_file(&self, hash: Hash, path: impl AsRef<Utf8Path>) -> Result<()> {
+    pub(crate) fn cache_file(&self, hash: Hash, path: impl AsRef<Utf8Path>) -> Result<()> {
         let cache_path = self.cache_path_for(hash);
 
         if cache_path.exists() {
@@ -64,7 +64,7 @@ impl JijiRepository {
         Ok(())
     }
 
-    pub fn cache_reference_file(&self, reference_file: &ReferenceFile) -> Result<Hash> {
+    pub(crate) fn cache_reference_file(&self, reference_file: &ReferenceFile) -> Result<Hash> {
         let serialized = reference_file
             .serialize()
             .wrap_err("failed to serialize reference file")?;

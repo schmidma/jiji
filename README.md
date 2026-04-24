@@ -84,6 +84,16 @@ jiji fetch
 
 `jiji fetch` downloads cached objects, but it does not restore files into the working tree by itself. Use `jiji restore` after `fetch` when you want to materialize tracked content back into the repository tree.
 
+## Repository Locking
+
+Jiji coordinates its currently lock-integrated commands with a repository-wide lock file at `.jiji/.lock`.
+
+- Read-only integrated commands can hold shared locks at the same time.
+- Integrated commands that mutate repository state or the working tree wait for exclusive access.
+- `jiji init` bootstraps `.jiji/.lock` first, then takes the repository write lock while completing initialization.
+- If an integrated command has to block, Jiji writes a waiting message to stderr before sleeping on the lock.
+- Locking in the current v1 implementation is blocking-only: there is no timeout and no immediate-fail mode.
+
 Clean unreachable cache objects conservatively:
 
 ```bash
@@ -93,7 +103,7 @@ jiji gc
 
 Today, `push` and `fetch` both use the configured default storage. `fetch` downloads objects into `.jiji/cache` and still requires `jiji restore` to write tracked content back into the working tree. `gc --dry-run` reports unreachable cached objects without deleting them, and `gc` removes cached objects that are no longer referenced by tracked files or tracked-directory manifests.
 
-For focused documentation on Jiji's current behavior and internal model, start with [`docs/index.md`](docs/index.md).
+For focused documentation on Jiji's current behavior and internal model, start with [`docs/index.md`](docs/index.md). The locking deep dive is at [`docs/deep-dives/locking.md`](docs/deep-dives/locking.md).
 
 ## License
 

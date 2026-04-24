@@ -20,6 +20,7 @@ impl JijiRepository {
     ///
     /// For example, restoring `foo/bar` will restore `foo/bar/data.txt` but not `foo/bar_asdf`.
     pub fn restore(&self, paths: &[impl AsRef<Utf8Path> + Debug]) -> Result<()> {
+        let _guard = self.write_lock("restore")?;
         let repo_relative_paths: Vec<Utf8PathBuf> = paths
             .iter()
             .map(|path| self.to_repo_relative_path(path))
@@ -157,9 +158,9 @@ fn index_contains_path(index: &Index, selected_path: &Utf8Path) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use std::fs;
+    use std::{fs, sync::mpsc, thread, time::Duration};
 
-    use crate::{reference_file::ReferenceFile, test_utils::setup_repo};
+    use crate::{locking::LockMode, reference_file::ReferenceFile, test_utils::setup_repo};
 
     use super::*;
 
@@ -198,6 +199,40 @@ mod tests {
 
         repo.restore(&["foo"])?;
         assert_eq!(fs::read_to_string(path)?, "nested file content");
+
+        Ok(())
+    }
+
+    #[test]
+    fn restore_blocks_while_read_lock_held() -> Result<()> {
+        let (repo, _tmp, _guard) = setup_repo()?;
+
+        fs::write("file.txt", "file content")?;
+        repo.add(["file.txt"])?;
+
+        let read_guard = repo.repository_lock()?.acquire(LockMode::Read, || {})?;
+        let (finished_tx, finished_rx) = mpsc::channel();
+
+        thread::scope(|scope| {
+            scope.spawn(|| {
+                finished_tx
+                    .send(repo.restore(&["file.txt"]))
+                    .expect("restore result should send");
+            });
+
+            thread::sleep(Duration::from_millis(150));
+            assert!(
+                finished_rx.try_recv().is_err(),
+                "restore should stay blocked while a read lock is held"
+            );
+
+            drop(read_guard);
+
+            finished_rx
+                .recv_timeout(Duration::from_secs(1))
+                .expect("restore should complete after the read lock is released")
+                .expect("restore should succeed once the lock is available");
+        });
 
         Ok(())
     }

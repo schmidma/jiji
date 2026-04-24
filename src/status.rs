@@ -126,6 +126,7 @@ impl StatusReport {
 impl JijiRepository {
     /// Prints the repository status in a structured way.
     pub fn status(&self) -> Result<()> {
+        let _guard = self.read_lock("status")?;
         let mut index = self.index().wrap_err("failed to collect index")?;
         index
             .resolve_status(self)
@@ -154,13 +155,22 @@ impl JijiRepository {
 
 #[cfg(test)]
 mod tests {
-    use std::fs::create_dir_all;
+    use std::{
+        fs::create_dir_all,
+        sync::mpsc,
+        thread,
+        time::{Duration, Instant},
+    };
 
     use camino::Utf8Path;
     use color_eyre::Result;
     use tempfile::tempdir;
 
-    use crate::{test_utils::CurrentDirGuard, JijiRepository};
+    use crate::{
+        locking::{LockMode, RepositoryLock},
+        test_utils::CurrentDirGuard,
+        JijiRepository,
+    };
 
     use super::{StatusKind, StatusReport};
 
@@ -186,6 +196,47 @@ mod tests {
         assert!(output.contains("modified: nested/deeper/repo.txt"));
         assert!(!output.contains("modified: nested/deeper/bare.txt"));
         assert!(!output.contains("modified: nested/deeper/nested/deeper/repo.txt"));
+        Ok(())
+    }
+
+    #[test]
+    fn status_waits_for_write_lock() -> Result<()> {
+        let repo_dir = tempdir()?;
+        let repo_root = <&Utf8Path>::try_from(repo_dir.path())?;
+        let repo = JijiRepository::init(repo_root)?;
+        let writer_lock = RepositoryLock::new(repo.workspace_root().join(".lock").as_std_path())?;
+        let writer_guard = writer_lock.acquire(LockMode::Write, || {})?;
+
+        let (started_tx, started_rx) = mpsc::channel();
+        let (finished_tx, finished_rx) = mpsc::channel();
+        let status_repo = JijiRepository::new(repo_root.to_owned())?;
+
+        let status_thread = thread::spawn(move || -> Result<()> {
+            started_tx.send(Instant::now())?;
+            status_repo.status()?;
+            finished_tx.send(Instant::now())?;
+            Ok(())
+        });
+
+        let started_at = started_rx.recv()?;
+        thread::sleep(Duration::from_millis(150));
+        assert!(
+            finished_rx.try_recv().is_err(),
+            "status should stay blocked while a writer holds the repository lock"
+        );
+
+        drop(writer_guard);
+
+        let finished_at = finished_rx.recv()?;
+        status_thread
+            .join()
+            .expect("status thread should not panic")?;
+
+        assert!(
+            finished_at.duration_since(started_at) >= Duration::from_millis(150),
+            "status should not finish before the writer releases the repository lock"
+        );
+
         Ok(())
     }
 }

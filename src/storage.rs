@@ -9,8 +9,12 @@ use color_eyre::{
 use tracing::warn;
 
 use crate::{
-    configuration::StorageConfiguration, hashing::Hash, index::DirectoryChildren,
-    reference_file::Reference, storage::path::PathStorage, JijiRepository,
+    configuration::{Configuration, StorageConfiguration},
+    hashing::Hash,
+    index::DirectoryChildren,
+    reference_file::Reference,
+    storage::path::PathStorage,
+    JijiRepository,
 };
 
 pub trait Storage {
@@ -43,14 +47,14 @@ impl Storage for StorageBackend {
 }
 
 impl JijiRepository {
-    fn init_storage_backend(&self, storage_name: &str) -> Result<StorageBackend> {
-        let config = self
-            .configuration
-            .storages
-            .get(storage_name)
-            .wrap_err_with(|| {
-                format!("storage '{storage_name}' not found in repository configuration")
-            })?;
+    fn init_storage_backend_from_config(
+        &self,
+        configuration: &Configuration,
+        storage_name: &str,
+    ) -> Result<StorageBackend> {
+        let config = configuration.storages.get(storage_name).wrap_err_with(|| {
+            format!("storage '{storage_name}' not found in repository configuration")
+        })?;
 
         match config {
             StorageConfiguration::Path { location } => {
@@ -64,9 +68,13 @@ impl JijiRepository {
         }
     }
 
-    pub fn push(&self, storage_name: &str) -> Result<()> {
+    fn push_with_configuration(
+        &self,
+        configuration: &Configuration,
+        storage_name: &str,
+    ) -> Result<()> {
         let storage = self
-            .init_storage_backend(storage_name)
+            .init_storage_backend_from_config(configuration, storage_name)
             .wrap_err_with(|| format!("failed to initialize storage backend '{storage_name}'"))?;
 
         let index = self.index().wrap_err("failed to index repository")?;
@@ -136,9 +144,13 @@ impl JijiRepository {
         Ok(())
     }
 
-    pub fn fetch(&self, storage_name: &str) -> Result<()> {
+    fn fetch_with_configuration(
+        &self,
+        configuration: &Configuration,
+        storage_name: &str,
+    ) -> Result<()> {
         let storage = self
-            .init_storage_backend(storage_name)
+            .init_storage_backend_from_config(configuration, storage_name)
             .wrap_err_with(|| format!("failed to initialize storage backend '{storage_name}'"))?;
         let mut index = self.index().wrap_err("failed to index repository")?;
 
@@ -217,6 +229,155 @@ impl JijiRepository {
                 }
             }
         }
+
+        Ok(())
+    }
+
+    pub fn push(&self, storage_name: &str) -> Result<()> {
+        let _guard = self.write_lock("push")?;
+        let configuration = self.load_configuration_fresh()?;
+        self.push_with_configuration(&configuration, storage_name)
+    }
+
+    pub fn push_default(&self) -> Result<()> {
+        let _guard = self.write_lock("push")?;
+        let configuration = self.load_configuration_fresh()?;
+        let storage_name = Self::require_default_storage_from_configuration(&configuration)?;
+        self.push_with_configuration(&configuration, &storage_name)
+    }
+
+    pub fn fetch(&self, storage_name: &str) -> Result<()> {
+        let _guard = self.write_lock("fetch")?;
+        let configuration = self.load_configuration_fresh()?;
+        self.fetch_with_configuration(&configuration, storage_name)
+    }
+
+    pub fn fetch_default(&self) -> Result<()> {
+        let _guard = self.write_lock("fetch")?;
+        let configuration = self.load_configuration_fresh()?;
+        let storage_name = Self::require_default_storage_from_configuration(&configuration)?;
+        self.fetch_with_configuration(&configuration, &storage_name)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{collections::HashMap, fs, sync::mpsc, thread, time::Duration};
+
+    use color_eyre::Result;
+
+    use crate::{
+        configuration::{Configuration, StorageConfiguration},
+        locking::LockMode,
+        test_utils::setup_repo,
+    };
+
+    #[test]
+    fn push_blocks_while_read_lock_held() -> Result<()> {
+        let (repo, _tmp, _guard) = setup_repo()?;
+        let storage_root = repo.workspace_root().join("storage");
+        fs::create_dir_all(storage_root.as_std_path())?;
+        repo.add_storage("local", &format!("file://{storage_root}"))?;
+
+        let read_guard = repo.repository_lock()?.acquire(LockMode::Read, || {})?;
+        let (finished_tx, finished_rx) = mpsc::channel();
+
+        thread::scope(|scope| {
+            scope.spawn(|| {
+                finished_tx
+                    .send(repo.push("local"))
+                    .expect("push result should send");
+            });
+
+            thread::sleep(Duration::from_millis(150));
+            assert!(
+                finished_rx.try_recv().is_err(),
+                "push should stay blocked while a read lock is held"
+            );
+
+            drop(read_guard);
+
+            finished_rx
+                .recv_timeout(Duration::from_secs(1))
+                .expect("push should complete after the read lock is released")
+                .expect("push should succeed once the lock is available");
+        });
+
+        Ok(())
+    }
+
+    #[test]
+    fn push_default_uses_default_selected_after_waiting_for_write_lock() -> Result<()> {
+        let (repo, _tmp, _guard) = setup_repo()?;
+        fs::write("file.txt", "file content")?;
+        repo.add(["file.txt"])?;
+
+        let old_storage_root = repo.workspace_root().join("old-storage");
+        let new_storage_root = repo.workspace_root().join("new-storage");
+        fs::create_dir_all(old_storage_root.as_std_path())?;
+        fs::create_dir_all(new_storage_root.as_std_path())?;
+
+        let storages = HashMap::from([
+            (
+                "old".to_string(),
+                StorageConfiguration::Path {
+                    location: old_storage_root.clone(),
+                },
+            ),
+            (
+                "new".to_string(),
+                StorageConfiguration::Path {
+                    location: new_storage_root.clone(),
+                },
+            ),
+        ]);
+        repo.save_configuration(&Configuration {
+            default_storage: Some("old".to_string()),
+            storages: storages.clone(),
+        })?;
+
+        let read_guard = repo.repository_lock()?.acquire(LockMode::Read, || {})?;
+        let (finished_tx, finished_rx) = mpsc::channel();
+
+        thread::scope(|scope| {
+            scope.spawn(|| {
+                finished_tx
+                    .send(repo.push_default())
+                    .expect("push result should send");
+            });
+
+            thread::sleep(Duration::from_millis(150));
+            assert!(
+                finished_rx.try_recv().is_err(),
+                "push_default should wait for the write lock before resolving the default"
+            );
+
+            repo.save_configuration(&Configuration {
+                default_storage: Some("new".to_string()),
+                storages,
+            })?;
+            drop(read_guard);
+
+            finished_rx
+                .recv_timeout(Duration::from_secs(1))
+                .expect("push_default should complete after the read lock is released")
+                .expect("push_default should succeed once the lock is available");
+
+            Ok::<(), color_eyre::Report>(())
+        })?;
+
+        assert!(
+            fs::read_dir(new_storage_root.as_std_path())?
+                .next()
+                .is_some(),
+            "push_default should store objects in the default chosen after the lock is acquired"
+        );
+        assert!(
+            fs::read_dir(old_storage_root.as_std_path())?
+                .next()
+                .is_none(),
+            "push_default should not use the stale default chosen before waiting"
+        );
 
         Ok(())
     }

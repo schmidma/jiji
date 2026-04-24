@@ -160,7 +160,7 @@ impl Node {
         Ok(self.directories.last_mut().expect("just added"))
     }
 
-    pub fn persist_to_disk(&mut self, repo: &JijiRepository) -> Result<()> {
+    pub(crate) fn persist_to_disk(&mut self, repo: &JijiRepository) -> Result<()> {
         if !self.is_dirty() {
             debug!("self '{}' is not dirty; skipping persist", self.path);
             return Ok(());
@@ -429,7 +429,7 @@ impl JijiRepository {
         })
     }
 
-    pub fn index(&self) -> Result<Index> {
+    pub(crate) fn index(&self) -> Result<Index> {
         let nodes = walkdir::WalkDir::new(&self.root)
             .sort_by_file_name()
             .into_iter()

@@ -181,13 +181,13 @@ fn main() -> Result<()> {
             repository_root,
             command,
         } => {
-            let mut repository = resolve_repository_root(repository_root)?;
+            let repository = resolve_repository_root(repository_root)?;
             match command {
                 StorageCommand::List { detail } => {
-                    println!(
-                        "{}",
-                        format_storage_list(&repository.storage_list(), detail)
-                    );
+                    let report = repository
+                        .storage_list()
+                        .wrap_err("failed to list storages")?;
+                    println!("{}", format_storage_list(&report, detail));
                 }
                 StorageCommand::Add { name, uri } => {
                     repository
@@ -208,16 +208,14 @@ fn main() -> Result<()> {
         }
         Command::Push { repository_root } => {
             let repository = resolve_repository_root(repository_root)?;
-            let storage = repository.require_default_storage()?;
             repository
-                .push(storage)
+                .push_default()
                 .wrap_err("failed to run push command")?;
         }
         Command::Fetch { repository_root } => {
             let repository = resolve_repository_root(repository_root)?;
-            let storage = repository.require_default_storage()?;
             repository
-                .fetch(storage)
+                .fetch_default()
                 .wrap_err("failed to run fetch command")?;
         }
     }
@@ -276,7 +274,7 @@ fn resolve_repository_root_from_current_directory(
     if let Some(root) = repository_root {
         let root = absolute_utf8(root).wrap_err("failed to get absolute path")?;
         let repository = JijiRepository::new(root).wrap_err("failed to open repository")?;
-        if !repository.is_initialized() {
+        if !repository.ensure_initialized_or_migrate_lock()? {
             bail!(
                 "no jiji repository found at '{}'",
                 repository.workspace_root(),
@@ -296,12 +294,15 @@ fn utf8_current_dir() -> Result<Utf8PathBuf> {
 mod tests {
     use std::{
         env::{current_dir, set_current_dir},
-        fs::create_dir_all,
-        sync::{Mutex, MutexGuard, OnceLock},
+        fs::{create_dir_all, OpenOptions},
+        sync::{mpsc, Mutex, MutexGuard, OnceLock},
+        thread,
+        time::Duration,
     };
 
     use camino::Utf8Path;
     use color_eyre::eyre::Context as _;
+    use fs2::FileExt as _;
     use tempfile::tempdir;
 
     use super::*;
@@ -599,6 +600,76 @@ mod tests {
             repository.workspace_root(),
             Utf8PathBuf::from("../../.jiji")
         );
+
+        Ok(())
+    }
+
+    #[test]
+    fn resolve_repository_root_creates_lock_for_explicit_legacy_repository() -> Result<()> {
+        let repo_dir = tempdir()?;
+        let repo_root = <&Utf8Path>::try_from(repo_dir.path())?;
+        let workspace = repo_root.join(".jiji");
+        create_dir_all(workspace.join("cache").as_std_path())?;
+        std::fs::write(workspace.join("config.toml"), "")?;
+
+        let repository = resolve_repository_root_from_current_directory(
+            Some(repo_root.to_owned()),
+            repo_root.to_owned(),
+        )?;
+
+        assert_eq!(repository.workspace_root(), workspace);
+        assert!(
+            workspace.join(".lock").is_file(),
+            "explicit legacy repository should receive a lock file"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn resolve_repository_root_waits_for_explicit_in_progress_init() -> Result<()> {
+        let repo_dir = tempdir()?;
+        let repo_root = <&Utf8Path>::try_from(repo_dir.path())?;
+        let workspace = repo_root.join(".jiji");
+        create_dir_all(workspace.as_std_path())?;
+
+        let lock_file = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(workspace.join(".lock"))?;
+        lock_file.lock_exclusive()?;
+
+        let (finished_tx, finished_rx) = mpsc::channel();
+
+        thread::scope(|scope| {
+            scope.spawn(|| {
+                finished_tx
+                    .send(resolve_repository_root_from_current_directory(
+                        Some(repo_root.to_owned()),
+                        repo_root.to_owned(),
+                    ))
+                    .expect("root resolution result should send");
+            });
+
+            thread::sleep(Duration::from_millis(150));
+            assert!(
+                finished_rx.try_recv().is_err(),
+                "explicit root resolution should wait while init holds the repository lock"
+            );
+
+            create_dir_all(workspace.join("cache").as_std_path())?;
+            std::fs::write(workspace.join("config.toml"), "")?;
+            lock_file.unlock()?;
+
+            let repository = finished_rx
+                .recv_timeout(Duration::from_secs(1))
+                .expect("root resolution should finish after init releases lock")?;
+            assert_eq!(repository.workspace_root(), workspace);
+
+            Ok::<_, color_eyre::Report>(())
+        })?;
 
         Ok(())
     }
