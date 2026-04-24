@@ -13,6 +13,7 @@ mod relative_path;
 mod restore;
 mod status;
 mod storage;
+mod untrack;
 mod with_added_extension;
 
 pub use crate::configuration::{StorageListEntry, StorageListReport};

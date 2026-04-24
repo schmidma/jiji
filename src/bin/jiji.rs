@@ -42,6 +42,15 @@ enum Command {
         #[clap(short, long)]
         repository_root: Option<Utf8PathBuf>,
     },
+    /// Stop tracking files or directories without deleting working-tree data
+    Untrack {
+        /// Paths to stop tracking
+        #[clap(required = true)]
+        paths: Vec<Utf8PathBuf>,
+        /// Path to the repository root
+        #[clap(short, long)]
+        repository_root: Option<Utf8PathBuf>,
+    },
     /// Show the status of the repository
     Status {
         /// Path to the repository root
@@ -142,6 +151,15 @@ fn main() -> Result<()> {
             repository
                 .restore(&paths)
                 .wrap_err("failed to run restore command")?;
+        }
+        Command::Untrack {
+            paths,
+            repository_root,
+        } => {
+            let repository = resolve_repository_root(repository_root)?;
+            repository
+                .untrack(&paths)
+                .wrap_err("failed to run untrack command")?;
         }
         Command::Status { repository_root } => {
             let repository = resolve_repository_root(repository_root)?;
@@ -436,6 +454,33 @@ mod tests {
                 dry_run: true,
             }
         ));
+    }
+
+    #[test]
+    fn untrack_command_paths_and_repository_root_parse() {
+        let arguments = Arguments::try_parse_from([
+            "jiji",
+            "untrack",
+            "--repository-root",
+            "/tmp/repo",
+            "data/file.txt",
+        ])
+        .expect("untrack should parse");
+
+        assert!(matches!(
+            arguments.command,
+            Command::Untrack {
+                repository_root: Some(_),
+                paths,
+            } if paths == vec![Utf8PathBuf::from("data/file.txt")]
+        ));
+    }
+
+    #[test]
+    fn untrack_command_requires_at_least_one_path() {
+        let result = Arguments::try_parse_from(["jiji", "untrack"]);
+
+        assert!(result.is_err());
     }
 
     #[test]
