@@ -24,6 +24,7 @@ impl JijiRepository {
         repository.ensure_lock_file()?;
 
         let _guard = repository.write_lock("init")?;
+        repository.ensure_workspace_gitignore()?;
 
         if !repository.cache_root().exists() {
             create_dir_all(repository.cache_root()).wrap_err("failed to create cache directory")?;
@@ -133,6 +134,33 @@ mod test {
             repo.workspace_root().join(".lock").exists(),
             ".jiji/.lock should exist"
         );
+
+        Ok(())
+    }
+
+    #[test]
+    fn init_creates_workspace_gitignore_for_local_state() -> Result<()> {
+        let tmp = tempdir()?;
+        let repo_path = <&Utf8Path>::try_from(tmp.path()).unwrap();
+
+        let repo = JijiRepository::init(repo_path)?;
+
+        let gitignore = std::fs::read_to_string(repo.workspace_root().join(".gitignore"))?;
+        assert_eq!(gitignore, "/cache/\n/.lock\n/config.local.toml\n");
+
+        Ok(())
+    }
+
+    #[test]
+    fn init_workspace_gitignore_is_idempotent() -> Result<()> {
+        let tmp = tempdir()?;
+        let repo_path = <&Utf8Path>::try_from(tmp.path()).unwrap();
+
+        JijiRepository::init(repo_path)?;
+        let repo = JijiRepository::init(repo_path)?;
+
+        let gitignore = std::fs::read_to_string(repo.workspace_root().join(".gitignore"))?;
+        assert_eq!(gitignore, "/cache/\n/.lock\n/config.local.toml\n");
 
         Ok(())
     }

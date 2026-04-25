@@ -1,4 +1,4 @@
-use std::{fmt::Debug, fs};
+use std::{collections::BTreeSet, fmt::Debug, fs};
 
 use camino::{Utf8Path, Utf8PathBuf};
 use color_eyre::{
@@ -28,10 +28,16 @@ impl JijiRepository {
         let mut index = self.index().wrap_err("failed to index repository")?;
         validate_selected_paths(&index, &selected_paths, self)?;
 
+        let mut changed_bases = BTreeSet::new();
         for node in index.iter_nodes_mut() {
             if untrack_node(self, node, &selected_paths)? {
+                changed_bases.insert(node.base.clone());
                 persist_node_after_untrack(self, node)?;
             }
+        }
+
+        for base in changed_bases {
+            self.refresh_gitignore_for_base(&index, &base)?;
         }
 
         for path in selected_paths {
@@ -242,6 +248,50 @@ mod tests {
 
         assert!(cache_path.exists());
         assert_eq!(fs::read_to_string(cache_path)?, "file content");
+
+        Ok(())
+    }
+
+    #[test]
+    fn untrack_removes_obsolete_gitignore_entry() -> Result<()> {
+        let (repo, _tmp, _guard) = setup_repo()?;
+        fs::write("model.bin", "model")?;
+        repo.add(["model.bin"])?;
+
+        repo.untrack(&["model.bin"])?;
+
+        assert!(!repo.root.join(".gitignore").exists());
+
+        Ok(())
+    }
+
+    #[test]
+    fn untrack_preserves_gitignore_entries_for_remaining_tracked_content() -> Result<()> {
+        let (repo, _tmp, _guard) = setup_repo()?;
+        fs::write("one.bin", "one")?;
+        fs::write("two.bin", "two")?;
+        repo.add(["one.bin", "two.bin"])?;
+
+        repo.untrack(&["one.bin"])?;
+
+        let gitignore = fs::read_to_string(repo.root.join(".gitignore"))?;
+        assert!(!gitignore.contains("/one.bin"));
+        assert!(gitignore.contains("/two.bin"));
+
+        Ok(())
+    }
+
+    #[test]
+    fn untrack_preserves_user_gitignore_content_when_managed_block_becomes_empty() -> Result<()> {
+        let (repo, _tmp, _guard) = setup_repo()?;
+        fs::write(".gitignore", "user-rule\n\n")?;
+        fs::write("model.bin", "model")?;
+        repo.add(["model.bin"])?;
+
+        repo.untrack(&["model.bin"])?;
+
+        let gitignore = fs::read_to_string(repo.root.join(".gitignore"))?;
+        assert_eq!(gitignore, "user-rule\n\n");
 
         Ok(())
     }

@@ -1,6 +1,6 @@
 use std::fs;
 
-use camino::Utf8Path;
+use camino::{Utf8Path, Utf8PathBuf};
 use color_eyre::{
     eyre::{bail, Context as _},
     Result,
@@ -29,14 +29,22 @@ impl JijiRepository {
             let path = path.as_ref();
             let relative_path = self.to_repo_relative_path(path)?;
             let user_facing_path = self.to_user_facing_path(&relative_path)?;
-            self.add_path(index, &relative_path)
+            let persisted_base = self
+                .add_path(index, &relative_path)
                 .wrap_err_with(|| format!("failed to add {user_facing_path}"))?;
             println!("adding {user_facing_path}");
+            if let Some(base) = persisted_base {
+                self.refresh_gitignore_for_base(index, &base)?;
+                if let Some(gitignore_path) = tracked_direct_gitignore_for_base(index, &base) {
+                    self.add_path(index, &gitignore_path)?;
+                }
+            }
         }
+
         Ok(())
     }
 
-    fn add_path(&self, index: &mut Index, path: &Utf8Path) -> Result<()> {
+    fn add_path(&self, index: &mut Index, path: &Utf8Path) -> Result<Option<Utf8PathBuf>> {
         let repository_path = self.root.join(path);
         let node = match index.find_owner_mut(path) {
             Some(node) => node,
@@ -99,6 +107,11 @@ impl JijiRepository {
             bail!("expected file or directory, found {path} with metadata {metadata:?}");
         }
 
+        if !node.is_dirty() {
+            return Ok(None);
+        }
+
+        let base = node.base.clone();
         node.persist_to_disk(self).wrap_err_with(|| {
             format!(
                 "failed to persist reference file for node with path {}",
@@ -106,8 +119,20 @@ impl JijiRepository {
             )
         })?;
 
-        Ok(())
+        Ok(Some(base))
     }
+}
+
+fn tracked_direct_gitignore_for_base(index: &Index, base: &Utf8Path) -> Option<Utf8PathBuf> {
+    index
+        .iter_nodes()
+        .filter(|node| node.base == base)
+        .any(|node| {
+            node.files
+                .iter()
+                .any(|file| file.path == Utf8Path::new(".gitignore"))
+        })
+        .then(|| base.join(".gitignore"))
 }
 
 #[cfg(test)]
@@ -149,6 +174,25 @@ mod tests {
             reference_file.directories.is_empty(),
             "reference file should not contain directories"
         );
+
+        Ok(())
+    }
+
+    #[test]
+    fn add_tracked_gitignore_updates_reference_after_managed_block_refresh() -> Result<()> {
+        let (repo, _tmp, _guard) = setup_repo()?;
+        fs::write(".gitignore", "user-rule\n")?;
+
+        repo.add([".gitignore"])?;
+
+        let mut index = repo.index()?;
+        index.resolve_status(&repo)?;
+        let file = index
+            .iter_nodes()
+            .flat_map(|node| node.files.iter())
+            .find(|file| file.path == Utf8Path::new(".gitignore"))
+            .expect("tracked .gitignore file should be indexed");
+        assert_eq!(file.status, crate::index::FileStatus::Clean);
 
         Ok(())
     }
@@ -243,6 +287,66 @@ mod tests {
             reference_file.directories.is_empty(),
             "reference file should not contain directories"
         );
+
+        Ok(())
+    }
+
+    #[test]
+    fn add_file_writes_local_gitignore_entry() -> Result<()> {
+        let (repo, _tmp, _guard) = setup_repo()?;
+        fs::create_dir_all("data")?;
+        fs::write("data/model.bin", "model")?;
+
+        repo.add(["data/model.bin"])?;
+
+        let gitignore = fs::read_to_string(repo.root.join("data/.gitignore"))?;
+        assert!(gitignore.contains("/model.bin"));
+        assert!(!gitignore.contains("*.jiji"));
+
+        Ok(())
+    }
+
+    #[test]
+    fn add_directory_writes_local_gitignore_entry_with_trailing_slash() -> Result<()> {
+        let (repo, _tmp, _guard) = setup_repo()?;
+        fs::create_dir_all("data/images")?;
+        fs::write("data/images/photo.jpg", "photo")?;
+
+        repo.add(["data/images"])?;
+
+        let gitignore = fs::read_to_string(repo.root.join("data/.gitignore"))?;
+        assert!(gitignore.contains("/images/"));
+
+        Ok(())
+    }
+
+    #[test]
+    fn repeated_add_does_not_duplicate_gitignore_entries() -> Result<()> {
+        let (repo, _tmp, _guard) = setup_repo()?;
+        fs::write("model.bin", "model")?;
+
+        repo.add(["model.bin"])?;
+        repo.add(["model.bin"])?;
+
+        let gitignore = fs::read_to_string(repo.root.join(".gitignore"))?;
+        assert_eq!(gitignore.matches("/model.bin").count(), 1);
+
+        Ok(())
+    }
+
+    #[test]
+    fn add_preserves_user_gitignore_content() -> Result<()> {
+        let (repo, _tmp, _guard) = setup_repo()?;
+        fs::create_dir_all("data")?;
+        fs::write("data/.gitignore", "user-rule\n\n")?;
+        fs::write("data/model.bin", "model")?;
+
+        repo.add(["data/model.bin"])?;
+
+        let gitignore = fs::read_to_string(repo.root.join("data/.gitignore"))?;
+        assert!(gitignore.starts_with("user-rule\n\n"));
+        assert!(gitignore.contains("# BEGIN Jiji tracked content"));
+        assert!(gitignore.contains("/model.bin"));
 
         Ok(())
     }
@@ -457,6 +561,35 @@ mod tests {
             !dir_path.with_added_extension("jiji").exists(),
             "reference file should not be created for empty directories"
         );
+
+        Ok(())
+    }
+
+    #[test]
+    fn add_empty_directory_does_not_write_gitignore_entry_without_reference_metadata() -> Result<()>
+    {
+        let (repo, _tmp, _guard) = setup_repo()?;
+        fs::create_dir_all("emptydir")?;
+
+        repo.add(["emptydir"])?;
+
+        assert!(!repo.root.join("emptydir.jiji").exists());
+        assert!(!repo.root.join(".gitignore").exists());
+
+        Ok(())
+    }
+
+    #[test]
+    fn add_refreshes_gitignore_for_successful_path_before_later_path_fails() -> Result<()> {
+        let (repo, _tmp, _guard) = setup_repo()?;
+        fs::write("tracked.bin", "tracked")?;
+
+        let result = repo.add(["tracked.bin", "missing.bin"]);
+
+        assert!(result.is_err());
+        assert!(repo.root.join("tracked.bin.jiji").exists());
+        let gitignore = fs::read_to_string(repo.root.join(".gitignore"))?;
+        assert!(gitignore.contains("/tracked.bin"));
 
         Ok(())
     }

@@ -5,6 +5,7 @@ mod cache;
 mod configuration;
 mod find_root;
 mod gc;
+mod gitignore;
 mod hashing;
 mod index;
 mod init;
