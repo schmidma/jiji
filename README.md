@@ -103,7 +103,7 @@ jiji gc
 
 Today, `push` and `fetch` both use the configured default storage. `fetch` downloads objects into `.jiji/cache` and still requires `jiji restore` to write tracked content back into the working tree. `gc --dry-run` reports unreachable cached objects without deleting them, and `gc` removes cached objects that are no longer referenced by tracked files or tracked-directory manifests.
 
-For focused documentation on Jiji's current behavior and internal model, start with [`docs/index.md`](docs/index.md). The locking deep dive is at [`docs/deep-dives/locking.md`](docs/deep-dives/locking.md).
+For focused documentation on Jiji's current behavior and internal model, start with [`docs/index.md`](docs/index.md). The Git workflow deep dive at [`docs/deep-dives/git-workflow.md`](docs/deep-dives/git-workflow.md) explains what Jiji changes in Git-visible state and what users should commit.
 
 ## License
 

@@ -6,6 +6,7 @@ The docs stay intentionally small: each page should explain one important part o
 
 ## Deep Dives
 
+- [`deep-dives/git-workflow.md`](deep-dives/git-workflow.md): what Jiji changes in Git-visible state, what users should commit, and what remains local
 - [`deep-dives/locking.md`](deep-dives/locking.md): repository locking, reader/writer behavior, waiting output, and current v1 limits
 - [`deep-dives/paths.md`](deep-dives/paths.md): how Jiji interprets, normalizes, stores, and acts on paths
 - [`deep-dives/storage.md`](deep-dives/storage.md): how storage backends, defaults, push/fetch selection, and cache garbage collection work today
